@@ -49,6 +49,7 @@ public final class IndexServerMain {
         IndexPersistence persistence = IndexPersistenceProvider.open(nc.persistence(), node, nc.persistenceSettings());
         IndexEngine engine = new IndexEngine(persistence);
         engine.restore();
-        return new IndexServer(node, port < 0 ? nc.port() : port, engine, new NamespaceCatalog(cfg)).start();
+        String bind = System.getProperty("galaxy.index.bind", nc.host()); // containers: -Dgalaxy.index.bind=0.0.0.0
+        return new IndexServer(node, bind, port < 0 ? nc.port() : port, engine, new NamespaceCatalog(cfg)).start();
     }
 }

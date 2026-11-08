@@ -145,6 +145,65 @@ class GridSecurityTest {
         assertNotNull(connectWith(untrusted)); // client does not trust the nodes' certificate
     }
 
+    @Test
+    void aCertificateForAnotherHostIsRejected() throws Exception {
+        Path wrong = tmp.resolve("wrong-host.p12");
+        keytool("-genkeypair", "-alias", "grid", "-keyalg", "RSA", "-keysize", "2048", "-dname", "CN=wrong.example",
+                "-ext", "SAN=dns:wrong.example", "-validity", "2", "-storetype", "PKCS12", "-keystore", wrong.toString(),
+                "-storepass", "changeit", "-keypass", "changeit");
+        String p = wrong.toString().replace("\\", "/");
+        start(String.join("\n", "    tls: true", "    tlsKeyStore: \"" + p + "\"", "    tlsKeyStorePassword: changeit",
+                "    tlsTrustStore: \"" + p + "\"", "    tlsTrustStorePassword: changeit"));
+        GalaxyException e = connectWith(Map.of());
+        assertTrue(String.valueOf(e.getMessage()).toLowerCase().contains("cannot connect"), e.getMessage());
+    }
+
+    /** A node keystore holding a certificate issued by a CA, and a truststore holding only that CA. */
+    private String caIssued(String name, String startDate, String validityDays) throws Exception {
+        String pw = "changeit";
+        Path ca = tmp.resolve(name + "-ca.p12");
+        Path leaf = tmp.resolve(name + "-node.p12");
+        Path trust = tmp.resolve(name + "-trust.p12");
+        Path csr = tmp.resolve(name + ".csr");
+        Path crt = tmp.resolve(name + ".crt");
+        Path caCrt = tmp.resolve(name + "-ca.crt");
+        keytool("-genkeypair", "-alias", "ca", "-keyalg", "RSA", "-keysize", "2048", "-dname", "CN=Grid Test CA", "-ext", "bc:c",
+                "-validity", "30", "-storetype", "PKCS12", "-keystore", ca.toString(), "-storepass", pw, "-keypass", pw);
+        keytool("-genkeypair", "-alias", "grid", "-keyalg", "RSA", "-keysize", "2048", "-dname", "CN=localhost",
+                "-validity", "30", "-storetype", "PKCS12", "-keystore", leaf.toString(), "-storepass", pw, "-keypass", pw);
+        keytool("-certreq", "-alias", "grid", "-keystore", leaf.toString(), "-storepass", pw, "-file", csr.toString());
+        keytool("-gencert", "-alias", "ca", "-keystore", ca.toString(), "-storepass", pw, "-infile", csr.toString(), "-outfile", crt.toString(),
+                "-ext", "SAN=dns:localhost,ip:127.0.0.1", "-startdate", startDate, "-validity", validityDays);
+        keytool("-exportcert", "-alias", "ca", "-keystore", ca.toString(), "-storepass", pw, "-file", caCrt.toString());
+        keytool("-importcert", "-noprompt", "-alias", "ca", "-keystore", leaf.toString(), "-storepass", pw, "-file", caCrt.toString());
+        keytool("-importcert", "-noprompt", "-alias", "grid", "-keystore", leaf.toString(), "-storepass", pw, "-file", crt.toString());
+        keytool("-importcert", "-noprompt", "-alias", "ca", "-storetype", "PKCS12", "-keystore", trust.toString(), "-storepass", pw, "-file", caCrt.toString());
+        return String.join("\n", "    tls: true",
+                "    tlsKeyStore: \"" + leaf.toString().replace("\\", "/") + "\"", "    tlsKeyStorePassword: changeit",
+                "    tlsTrustStore: \"" + trust.toString().replace("\\", "/") + "\"", "    tlsTrustStorePassword: changeit");
+    }
+
+    @Test
+    void aCertificateIssuedByTheTrustedCaWorks() throws Exception {
+        start(caIssued("good", "-1d", "10"));
+        roundTrip();
+    }
+
+    @Test
+    void anExpiredCertificateIsRejected() throws Exception {
+        start(caIssued("expired", "-30d", "2"));
+        GalaxyException e = connectWith(Map.of());
+        assertTrue(String.valueOf(e.getMessage()).toLowerCase().contains("cannot connect"), e.getMessage());
+    }
+    @Test
+    void aTlsNodeWithoutAKeystoreRefusesToStart() {
+        Map<String, Object> s = new LinkedHashMap<>();
+        s.put("nodes", "n=localhost:1");
+        s.put("authToken", TOKEN);
+        s.put("tls", "true");
+        GalaxyException e = assertThrows(GalaxyException.class, () -> new GridNode("n", GridSettings.from(s), tmp.resolve("z"), -1, r -> { }));
+        assertTrue(e.getMessage().contains("no tlsKeyStore"), e.getMessage());
+    }
     private static void keytool(String... args) throws Exception {
         List<String> cmd = new ArrayList<>();
         cmd.add(Path.of(System.getProperty("java.home"), "bin", "keytool").toString());

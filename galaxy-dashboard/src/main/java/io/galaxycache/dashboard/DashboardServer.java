@@ -382,6 +382,9 @@ public final class DashboardServer implements AutoCloseable {
 
     private void json(String path, ScopedBody body) {
         server.createContext(path, ex -> {
+            if (refused(ex)) {
+                return;
+            }
             try {
                 Scope scope = Scope.of(query(ex, "namespace"), query(ex, "dataset"));
                 respond(ex, 200, "application/json", Json.write(body.get(scope, ex)));
@@ -391,7 +394,29 @@ public final class DashboardServer implements AutoCloseable {
         });
     }
 
+    /**
+     * On a loopback address the only legitimate Host is a loopback name; anything else is a web page using DNS
+     * rebinding to read the dashboard from the viewer's browser. Only GET is served.
+     */
+    private boolean refused(HttpExchange ex) throws IOException {
+        if (!"GET".equals(ex.getRequestMethod())) {
+            respond(ex, 405, "text/plain", "GET only");
+            return true;
+        }
+        String host = ex.getRequestHeaders().getFirst("Host");
+        String name = host == null ? "" : host.replaceFirst(":\\d+$", "");
+        if (server.getAddress().getAddress().isLoopbackAddress()
+                && !(name.equals("localhost") || name.equals("127.0.0.1") || name.equals("[::1]"))) {
+            respond(ex, 403, "text/plain", "bad Host header");
+            return true;
+        }
+        return false;
+    }
+
     private void page(HttpExchange ex) throws IOException {
+        if (refused(ex)) {
+            return;
+        }
         if (!ex.getRequestURI().getPath().equals("/")) {
             respond(ex, 404, "text/plain", "not found");
             return;
@@ -427,6 +452,10 @@ public final class DashboardServer implements AutoCloseable {
     private static void respond(HttpExchange ex, int status, String type, String body) throws IOException {
         byte[] b = body.getBytes(StandardCharsets.UTF_8);
         ex.getResponseHeaders().set("Content-Type", type);
+        ex.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
+        ex.getResponseHeaders().set("X-Frame-Options", "DENY");
+        ex.getResponseHeaders().set("Referrer-Policy", "no-referrer");
+        ex.getResponseHeaders().set("Content-Security-Policy", "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'");
         ex.sendResponseHeaders(status, b.length);
         try (OutputStream out = ex.getResponseBody()) {
             out.write(b);

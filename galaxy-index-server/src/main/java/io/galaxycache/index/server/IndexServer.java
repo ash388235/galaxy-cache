@@ -31,6 +31,7 @@ import java.util.function.Predicate;
 public final class IndexServer implements AutoCloseable {
 
     private static final System.Logger LOG = System.getLogger(IndexServer.class.getName());
+    private static final int MAX_BODY_BYTES = 64 * 1024 * 1024;
 
     private final String nodeName;
     private final IndexEngine engine;
@@ -42,11 +43,16 @@ public final class IndexServer implements AutoCloseable {
      * @param catalog when not null, only namespaces mapped to {@code nodeName} are accepted
      */
     public IndexServer(String nodeName, int port, IndexEngine engine, NamespaceCatalog catalog) {
+        this(nodeName, "127.0.0.1", port, engine, catalog);
+    }
+
+    /** @param bindHost address to listen on. Index pods have no login, so keep this on a trusted network. */
+    public IndexServer(String nodeName, String bindHost, int port, IndexEngine engine, NamespaceCatalog catalog) {
         this.nodeName = nodeName;
         this.engine = engine;
         this.catalog = catalog;
         try {
-            this.http = HttpServer.create(new InetSocketAddress(port), 256);
+            this.http = HttpServer.create(new InetSocketAddress(bindHost, port), 256);
         } catch (IOException e) {
             throw new GalaxyException("Cannot bind index server '" + nodeName + "' on port " + port + ": " + e.getMessage(), e);
         }
@@ -67,6 +73,7 @@ public final class IndexServer implements AutoCloseable {
         http.createContext("/v1/index/query", ex -> handle(ex, "POST", () -> {
             Messages.QueryRequest r = Json.read(body(ex), Messages.QueryRequest.class);
             checkOwned(r.dataset());
+            io.galaxycache.common.query.FilterLimits.check(r.query().filter());
             return engine.query(r.dataset(), r.query());
         }));
         http.createContext("/v1/index/drop", ex -> handle(ex, "POST", () -> {
@@ -133,7 +140,11 @@ public final class IndexServer implements AutoCloseable {
 
     private static byte[] body(HttpExchange ex) throws IOException {
         try (InputStream in = ex.getRequestBody()) {
-            return in.readAllBytes();
+            byte[] body = in.readNBytes(MAX_BODY_BYTES + 1);
+            if (body.length > MAX_BODY_BYTES) {
+                throw new IllegalArgumentException("request larger than " + MAX_BODY_BYTES + " bytes");
+            }
+            return body;
         }
     }
 

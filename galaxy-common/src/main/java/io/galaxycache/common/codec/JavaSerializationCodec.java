@@ -16,10 +16,18 @@ import java.io.Serializable;
 /**
  * Standard Java serialization ({@link ObjectOutputStream}): the domain class and everything it holds must
  * implement {@link Serializable}. Each record is one self-contained stream, so it carries its own class
- * descriptors. Reads only accept JDK classes and classes from the domain's own package (and sub-packages),
- * so a tampered file cannot make the reader instantiate arbitrary classes.
+ * descriptors. Reads only accept core JDK value classes and classes from the domain's own package (and sub-packages),
+ * with limits on depth, references and array sizes, so a tampered file cannot make the reader instantiate arbitrary
+ * classes or exhaust memory.
  */
 public final class JavaSerializationCodec implements Codec {
+
+    /** Exact packages only: never java.lang.invoke, java.lang.reflect, java.net, javax.* or anything else with gadgets. */
+    private static final java.util.Set<String> ALLOWED_JDK_PACKAGES =
+            java.util.Set.of("java.lang", "java.util", "java.util.concurrent", "java.math", "java.time");
+    private static final long MAX_DEPTH = 64;
+    private static final long MAX_REFERENCES = 5_000_000;
+    private static final long MAX_ARRAY_LENGTH = 64L * 1024 * 1024;
 
     @Override
     public String name() {
@@ -47,6 +55,11 @@ public final class JavaSerializationCodec implements Codec {
     public <T> T decode(byte[] bytes, int domainVersion, Class<T> type) {
         String pkg = type.getPackageName();
         ObjectInputFilter filter = info -> {
+            // bound the shape of the stream first: these limits apply even when no class is being resolved
+            if (info.depth() > MAX_DEPTH || info.references() > MAX_REFERENCES || info.arrayLength() > MAX_ARRAY_LENGTH
+                    || info.streamBytes() > bytes.length) {
+                return ObjectInputFilter.Status.REJECTED;
+            }
             Class<?> c = info.serialClass();
             if (c == null) {
                 return ObjectInputFilter.Status.UNDECIDED;
@@ -55,7 +68,7 @@ public final class JavaSerializationCodec implements Codec {
                 c = c.getComponentType();
             }
             String p = c.getPackageName();
-            boolean ok = c.isPrimitive() || p.startsWith("java.") || p.equals(pkg) || p.startsWith(pkg + ".");
+            boolean ok = c.isPrimitive() || ALLOWED_JDK_PACKAGES.contains(p) || p.equals(pkg) || p.startsWith(pkg + ".");
             return ok ? ObjectInputFilter.Status.ALLOWED : ObjectInputFilter.Status.REJECTED;
         };
         try (ObjectInputStream in = new DomainObjectInputStream(new ByteArrayInputStream(bytes), type.getClassLoader())) {

@@ -4,6 +4,8 @@ import com.sun.net.httpserver.HttpServer;
 import io.galaxycache.common.DatasetId;
 import io.galaxycache.common.GalaxyException;
 import io.galaxycache.common.Json;
+import io.galaxycache.common.domain.Values;
+import io.galaxycache.common.query.FilterLimits;
 import io.galaxycache.grid.api.ClusterMonitor;
 import io.galaxycache.grid.api.GridClient;
 import io.galaxycache.grid.api.GridSettings;
@@ -41,6 +43,7 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Semaphore;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
@@ -109,6 +112,14 @@ public final class GridNode implements AutoCloseable {
         try {
             // listen only on this node's own address unless bindAddress says otherwise (e.g. 0.0.0.0 in a container)
             String bind = settings.bindAddress() != null ? settings.bindAddress() : topology.member(name).host();
+            if (settings.security().token() == null && !settings.allowNoAuthOnNetwork()
+                    && !java.net.InetAddress.getByName(bind).isLoopbackAddress()) {
+                throw new GalaxyException("grid node " + name + " would listen on " + bind + " without authentication; set authToken"
+                        + " (or allowNoAuthOnNetwork: true on a network you fully trust)");
+            }
+            if (settings.security().tls() && GridSettings.str(settings.raw(), "tlsKeyStore", null) == null) {
+                throw new GalaxyException("grid node " + name + " has tls: true but no tlsKeyStore");
+            }
             server = settings.security().serverSocket(bind, port);
             admin = adminPort < 0 ? null : HttpServer.create(new InetSocketAddress(bind, adminPort), 64);
         } catch (IOException e) {
@@ -196,6 +207,14 @@ public final class GridNode implements AutoCloseable {
         return state;
     }
 
+    private static final int BODY_TIMEOUT_MS = 30_000;
+    private final java.util.concurrent.atomic.AtomicInteger openConnections = new java.util.concurrent.atomic.AtomicInteger();
+    /** Memory all requests being read or handled may hold together, so many large requests cannot exhaust the heap. */
+    private final int requestMemoryLimit = (int) Math.min(Integer.MAX_VALUE, Runtime.getRuntime().maxMemory() / 2);
+    private final Semaphore requestMemory = new Semaphore(requestMemoryLimit);
+    /** Index queries evaluated at once. Each one can build large id sets, so this bounds their combined memory. */
+    private final Semaphore querySlots = new Semaphore(Math.max(2, Runtime.getRuntime().availableProcessors()));
+
     /** One maintenance job at a time. Separate from the node's monitor, so fail-stop never waits for a long job. */
     private final ReentrantLock maintenance = new ReentrantLock();
     private final Map<String, Long> unindexed = new ConcurrentHashMap<>();
@@ -218,10 +237,17 @@ public final class GridNode implements AutoCloseable {
                 if (!topology.ownerOf(rec.id()).name().equals(name)) {
                     misplaced.merge(ds.key(), 1L, Long::sum);
                 }
-                @SuppressWarnings("unchecked")
-                Map<String, Object> fields = Json.read(rec.payload(), Map.class);
-                batch.add(new IndexDocument(rec.id(), fields));
-                n[0]++;
+                try {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> fields = Json.read(rec.payload(), Map.class);
+                    fields.values().forEach(Values::normalize);
+                    batch.add(new IndexDocument(rec.id(), fields));
+                    n[0]++;
+                } catch (RuntimeException e) { // one bad document must never stop the node from starting
+                    count("indexDocumentsSkipped", 1);
+                    LOG.log(System.Logger.Level.WARNING, "grid node {0}: skipped unreadable index document {1}", name, rec.id());
+                    return;
+                }
                 if (batch.size() == 10_000) {
                     index.upsert(ds, List.copyOf(batch));
                     batch.clear();
@@ -352,6 +378,9 @@ public final class GridNode implements AutoCloseable {
 
     /** Persists index documents (synchronously), then applies them in memory. */
     private int persistAndIndex(DatasetId ds, List<IndexDocument> docs) {
+        for (IndexDocument d : docs) { // refuse bad values before they are saved: a saved one would break every restart
+            d.fields().values().forEach(Values::normalize);
+        }
         ensureIndexDataset(ds);
         List<StoredRecord> recs = new ArrayList<>(docs.size());
         for (IndexDocument d : docs) {
@@ -399,8 +428,13 @@ public final class GridNode implements AutoCloseable {
                     s.close();
                     break;
                 }
+                if (openConnections.incrementAndGet() > settings.maxConnections()) {
+                    openConnections.decrementAndGet();
+                    count("connectionsRejected", 1);
+                    s.close();
+                    continue;
+                }
                 s.setTcpNoDelay(true);
-                s.setSendBufferSize(4 * 1024 * 1024);
                 Thread.ofVirtual().name("galaxy-grid-conn-" + name).start(() -> serve(s));
             } catch (IOException e) {
                 if (running) {
@@ -413,9 +447,10 @@ public final class GridNode implements AutoCloseable {
     private void serve(Socket s) {
         sockets.add(s);
         try (s) {
-            DataInputStream in = new DataInputStream(new BufferedInputStream(s.getInputStream(), 256 * 1024));
-            DataOutputStream out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream(), 1024 * 1024));
-            s.setSoTimeout(10_000);
+            // small buffers: a connection that has not logged in yet must cost almost nothing
+            DataInputStream in = new DataInputStream(new BufferedInputStream(s.getInputStream(), 16 * 1024));
+            DataOutputStream out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream(), 16 * 1024));
+            s.setSoTimeout(settings.handshakeTimeoutMs());
             String refused = GridProtocol.nodeHandshake(in, out, topology.fingerprint(), settings.security().token());
             if (refused != null) {
                 count("connectionsRefused", 1);
@@ -423,23 +458,47 @@ public final class GridNode implements AutoCloseable {
                         s.getRemoteSocketAddress(), refused);
                 return;
             }
-            s.setSoTimeout(0);
+            s.setSendBufferSize(4 * 1024 * 1024);
             ReentrantLock writeLock = new ReentrantLock();
+            Semaphore inFlight = new Semaphore(settings.maxInFlightPerConnection());
             while (running) {
-                GridProtocol.Frame req = GridProtocol.readFrame(in);
-                workers.execute(() -> handle(req, new Responder(req.id(), out, writeLock)));
+                s.setSoTimeout(0); // a connection may sit idle between requests...
+                int length = GridProtocol.readLength(in);
+                int cost = Math.min(length, requestMemoryLimit);
+                requestMemory.acquire(cost); // ...but memory for a request is reserved before it is allocated
+                GridProtocol.Frame req;
+                try {
+                    s.setSoTimeout(BODY_TIMEOUT_MS); // and a request must arrive in reasonable time once started
+                    req = GridProtocol.readBody(in, length);
+                    inFlight.acquire();
+                } catch (Throwable t) {
+                    requestMemory.release(cost);
+                    throw t;
+                }
+                workers.execute(() -> {
+                    try {
+                        handle(req, new Responder(req.id(), out, writeLock));
+                    } finally {
+                        inFlight.release();
+                        requestMemory.release(cost);
+                    }
+                });
             }
-        } catch (EOFException | SocketException e) {
-            // client went away
+        } catch (EOFException | SocketException | java.net.SocketTimeoutException e) {
+            // client went away, or was too slow
         } catch (IOException e) {
             if (running) {
-                LOG.log(System.Logger.Level.WARNING, "connection error on " + name, e);
+                LOG.log(System.Logger.Level.WARNING, "connection error on " + name + ": " + e);
             }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (OutOfMemoryError e) {
+            failStop("fatal error: " + e);
         } finally {
             sockets.remove(s);
+            openConnections.decrementAndGet();
         }
     }
-
     /** Writes the response frames of one request; frames of different requests never interleave. */
     private static final class Responder {
         private final long id;
@@ -532,7 +591,7 @@ public final class GridNode implements AutoCloseable {
                 }
                 case GridProtocol.PUT_RECORDS -> {
                     DatasetId ds = DatasetId.parse(in.getString());
-                    int n = in.getInt();
+                    int n = in.getCount(12); // id, version and payload lengths
                     List<StoredRecord> recs = new ArrayList<>(n);
                     for (int i = 0; i < n; i++) {
                         String id = in.getString();
@@ -545,7 +604,7 @@ public final class GridNode implements AutoCloseable {
                 }
                 case GridProtocol.GET_ALL -> {
                     DatasetId ds = DatasetId.parse(in.getString());
-                    int n = in.getInt();
+                    int n = in.getCount(4);
                     List<String> ids = new ArrayList<>(n);
                     for (int i = 0; i < n; i++) {
                         ids.add(in.getString());
@@ -558,7 +617,7 @@ public final class GridNode implements AutoCloseable {
                 }
                 case GridProtocol.DELETE_RECORDS -> {
                     DatasetId ds = DatasetId.parse(in.getString());
-                    int n = in.getInt();
+                    int n = in.getCount(4);
                     List<String> ids = new ArrayList<>(n);
                     for (int i = 0; i < n; i++) {
                         ids.add(in.getString());
@@ -603,7 +662,14 @@ public final class GridNode implements AutoCloseable {
                     // ids stream back in frames of [count]{id}; the last frame ends with [total][tookMicros],
                     // so a query matching millions of ids never needs one huge frame
                     Messages.QueryRequest q = Json.read(req.body(), Messages.QueryRequest.class);
-                    Messages.QueryResponse res = index.query(q.dataset(), q.query());
+                    FilterLimits.check(q.query().filter());
+                    Messages.QueryResponse res;
+                    querySlots.acquireUninterruptibly();
+                    try {
+                        res = index.query(q.dataset(), q.query());
+                    } finally {
+                        querySlots.release();
+                    }
                     List<String> ids = res.ids();
                     int from = 0;
                     do {
@@ -636,8 +702,11 @@ public final class GridNode implements AutoCloseable {
             } catch (RuntimeException ignored) {
                 // connection gone
             }
-        } catch (Error e) { // out of memory and the like: this node can no longer be trusted
+        } catch (OutOfMemoryError e) { // this node can no longer be trusted
             failStop("fatal error: " + e);
+        } catch (StackOverflowError e) { // a hostile request, not a broken node
+            count("errors", 1);
+            r.error("request too complex");
         }
     }
 
@@ -714,7 +783,7 @@ public final class GridNode implements AutoCloseable {
         metric(m, "galaxy_grid_node_uptime_seconds", "gauge", "Seconds since the node started", id,
                 (System.currentTimeMillis() - startedAt) / 1000);
         metric(m, "galaxy_grid_partitions_owned", "gauge", "Partitions owned by this node", id, topology.partitionCounts().get(name));
-        for (String[] c : new String[][]{{"requests", "requests"}, {"errors", "errors"}, {"recordsRead", "records_read"},
+        for (String[] c : new String[][]{{"requests", "requests"}, {"errors", "errors"}, {"connectionsRejected", "connections_rejected"}, {"recordsRead", "records_read"},
                 {"recordsWritten", "records_written"}, {"connectionsRefused", "connections_refused"},
                 {"recordsMovedOut", "records_moved_out"}}) {
             AtomicLong v = counters.get(c[0]);

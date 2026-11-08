@@ -96,6 +96,9 @@ Certificates must match the host names in `nodes`. A node log line states the tr
 means none is set. The admin port (health, stats, metrics) has no login and exposes counts only, never data: keep
 it on a management network.
 
+Limits you can tune in the grid settings: `maxConnections` (1024), `maxInFlightPerConnection` (256) and
+`handshakeTimeoutMs` (5000). Findings and the security test plan are in `docs/SECURITY-TESTING.md`.
+
 ## Sizing
 
 Measured with BaseTransaction objects (about 28 KB binary).

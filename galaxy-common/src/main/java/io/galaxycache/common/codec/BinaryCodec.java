@@ -82,7 +82,7 @@ public final class BinaryCodec implements Codec {
 
     @Override
     public <T> T decode(byte[] bytes, int domainVersion, Class<T> type) {
-        In in = new In(bytes);
+        In in = new In(bytes, type);
         byte format = in.readByte();
         if (format != FORMAT) {
             throw new GalaxyException("Not a binary-codec payload (format byte " + format + ") for " + type.getName());
@@ -500,11 +500,16 @@ public final class BinaryCodec implements Codec {
             if (tag == 0) {
                 return null;
             }
-            Class<?> c = tag == 1 ? Class.forName((String) STRING.read(in), false,
-                    Thread.currentThread().getContextClassLoader() != null
-                            ? Thread.currentThread().getContextClassLoader() : BinaryCodec.class.getClassLoader())
-                    : TAGGED.get(tag - 2);
-            return (tag == 1 ? handlerFor(c) : taggedHandler(c)).read(in);
+            if (tag - 2 >= TAGGED.size()) {
+                throw new GalaxyException("Binary payload has unknown type tag " + tag);
+            }
+            in.enter();
+            try {
+                Class<?> c = tag == 1 ? in.allowedClass((String) STRING.read(in), Object.class) : TAGGED.get(tag - 2);
+                return (tag == 1 ? handlerFor(c) : taggedHandler(c)).read(in);
+            } finally {
+                in.leave();
+            }
         }
     };
 
@@ -592,8 +597,13 @@ public final class BinaryCodec implements Codec {
             if (mode == 0) {
                 return null;
             }
-            Class<?> c = mode == 1 ? declared : Class.forName((String) STRING.read(in), false, declared.getClassLoader());
-            return schema(c).read(in);
+            in.enter();
+            try {
+                Class<?> c = mode == 1 ? declared : in.allowedClass((String) STRING.read(in), declared);
+                return schema(c).read(in);
+            } finally {
+                in.leave();
+            }
         });
     }
 
@@ -614,6 +624,7 @@ public final class BinaryCodec implements Codec {
             if (n == 0) {
                 return null;
             }
+            in.checkCount(n - 1, 1);
             @SuppressWarnings("unchecked")
             Collection<Object> c = (Collection<Object>) newCollection(declared, n - 1);
             for (int i = 0; i < n - 1; i++) {
@@ -640,6 +651,7 @@ public final class BinaryCodec implements Codec {
             if (n == 0) {
                 return null;
             }
+            in.checkCount(n - 1, 2);
             @SuppressWarnings("unchecked")
             Map<Object, Object> m = (Map<Object, Object>) newMap(declared, n - 1);
             for (int i = 0; i < n - 1; i++) {
@@ -666,6 +678,7 @@ public final class BinaryCodec implements Codec {
             if (n == 0) {
                 return null;
             }
+            in.checkCount(n - 1, 1);
             Object a = Array.newInstance(component, n - 1);
             for (int i = 0; i < n - 1; i++) {
                 Array.set(a, i, element.read(in));
@@ -788,16 +801,58 @@ public final class BinaryCodec implements Codec {
         }
     }
 
+    private static final int MAX_DEPTH = 512;
+
     private static final class In {
         private final byte[] buf;
+        private final String domainPackage;
+        private final ClassLoader loader;
+        private int depth;
         private int pos;
 
-        In(byte[] buf) {
+        In(byte[] buf, Class<?> domain) {
             this.buf = buf;
+            this.domainPackage = domain.getPackageName();
+            this.loader = domain.getClassLoader();
+        }
+
+        /** Payloads come from storage, so class names in them are untrusted: only the domain's own package may load. */
+        Class<?> allowedClass(String name, Class<?> declared) throws ClassNotFoundException {
+            if (name == null || !packageAllowed(name)) {
+                throw new GalaxyException("Binary payload names a class outside the domain package: " + name);
+            }
+            Class<?> c = Class.forName(name, false, loader); // not initialized here
+            if (!declared.isAssignableFrom(c) || c.isArray()) {
+                throw new GalaxyException("Binary payload names a class that does not fit its field: " + name);
+            }
+            return c;
+        }
+
+        private boolean packageAllowed(String name) {
+            int dot = name.lastIndexOf('.');
+            String pkg = dot < 0 ? "" : name.substring(0, dot);
+            return pkg.equals(domainPackage) || (!domainPackage.isEmpty() && pkg.startsWith(domainPackage + "."));
+        }
+
+        void enter() {
+            if (++depth > MAX_DEPTH) {
+                throw new GalaxyException("Binary payload is nested too deeply");
+            }
+        }
+
+        void leave() {
+            depth--;
+        }
+
+        /** A claimed element count must fit in the bytes left, so a corrupt length cannot trigger a huge allocation. */
+        void checkCount(int n, int minBytesEach) {
+            if (n < 0 || n > (buf.length - pos) / minBytesEach) {
+                throw new GalaxyException("Binary payload claims " + n + " elements with " + (buf.length - pos) + " bytes left");
+            }
         }
 
         private void need(int n) {
-            if (pos + n > buf.length) {
+            if (n < 0 || n > buf.length - pos) {
                 throw new GalaxyException("Binary payload truncated at byte " + pos);
             }
         }

@@ -68,7 +68,7 @@ public final class NamespaceCatalog {
      * fails if the namespace already exists with a different mapping.
      */
     public GalaxyConfig.NamespaceConfig create(String name, String storage, String indexNode) {
-        if (name == null || !NAME.matcher(name).matches()) {
+        if (name == null || !NAME.matcher(name).matches() || !io.galaxycache.common.DatasetId.validSegment(name)) {
             throw new GalaxyException("invalid namespace name '" + name + "'");
         }
         config.checkMapping(name, storage, indexNode);

@@ -46,6 +46,32 @@ public record GridSettings(GridTopology topology, int connectionsPerNode, int ti
                 settings);
     }
 
+    /** Open connections a node accepts; more are closed at once. Unauthenticated ones count too. */
+    public int maxConnections() {
+        return (int) num(raw, "maxConnections", 1_024);
+    }
+
+    /** Requests a node works on at once per connection; beyond that it stops reading from that connection. */
+    public int maxInFlightPerConnection() {
+        return (int) num(raw, "maxInFlightPerConnection", 256);
+    }
+
+    /** How long a new connection may take to complete the handshake. */
+    public int handshakeTimeoutMs() {
+        return (int) num(raw, "handshakeTimeoutMs", 5_000);
+    }
+
+    /** A node refuses to listen beyond loopback without a token unless this is true. */
+    public boolean allowNoAuthOnNetwork() {
+        return Boolean.parseBoolean(str(raw, "allowNoAuthOnNetwork", "false"));
+    }
+
+    /** Never prints tokens or passwords. */
+    @Override
+    public String toString() {
+        return "GridSettings[" + topology + ", tls=" + security.tls() + ", auth=" + (security.token() != null) + "]";
+    }
+
     public boolean exitOnFailure() {
         return "exit".equalsIgnoreCase(onFailure);
     }

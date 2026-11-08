@@ -105,6 +105,12 @@ public record GridSecurity(byte[] token, SSLContext ssl, boolean verifyHostname)
         return ss;
     }
 
+    /** Never prints the token. */
+    @Override
+    public String toString() {
+        return "GridSecurity[auth=" + (token != null) + ", tls=" + (ssl != null) + "]";
+    }
+
     public boolean tls() {
         return ssl != null;
     }

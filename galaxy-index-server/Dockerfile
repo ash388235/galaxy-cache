@@ -4,4 +4,4 @@ WORKDIR /app
 COPY target/galaxy-index-server.jar /app/galaxy-index-server.jar
 ENV GALAXY_CONFIG=/config/galaxy.yaml
 EXPOSE 7070
-ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-jar", "/app/galaxy-index-server.jar"]
+ENTRYPOINT ["java", "-XX:MaxRAMPercentage=75", "-Dgalaxy.index.bind=0.0.0.0", "-jar", "/app/galaxy-index-server.jar"]

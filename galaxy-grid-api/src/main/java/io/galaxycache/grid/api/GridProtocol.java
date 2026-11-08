@@ -22,7 +22,7 @@ import java.util.Arrays;
 public final class GridProtocol {
 
     public static final int MAGIC = 0x47414C58; // "GALX", sent once by the client after connecting
-    public static final int VERSION = 1;
+    public static final int VERSION = 2;
     public static final int MAX_FRAME = 64 * 1024 * 1024;
     /** Ids per frame of a streamed INDEX_QUERY answer. */
     public static final int IDS_PER_FRAME = 50_000;
@@ -61,17 +61,25 @@ public final class GridProtocol {
     // ================================================================== handshake
     //
     //   client -> node : [MAGIC][VERSION]
-    //   node -> client : [MAGIC][VERSION][nonce: 16 bytes][node fingerprint: UTF][auth required: byte]
-    //   client -> node : [client fingerprint: UTF][proof length: int][proof]   proof = HMAC-SHA256(token, nonce)
-    //   node -> client : [status: int][message: UTF]                           status 0 = accepted
+    //   node -> client : [MAGIC][VERSION][node nonce: 16][node fingerprint: UTF][auth required: byte]
+    //   client -> node : [client fingerprint: UTF][client nonce: 16][proof length: int][proof]
+    //   node -> client : [status: int][message: UTF][proof length: int][proof]    status 0 = accepted
     //
-    // Both sides compare fingerprints, so a node or client running with another grid configuration (other
-    // nodes, ports or partition count) is refused before any data moves.
+    // Both sides compare fingerprints, so a node or client running with another grid configuration (other nodes,
+    // ports or partition count) is refused before any data moves. With a token each side proves it knows it:
+    //   client proof = HMAC-SHA256(token, "galaxy-client" | node nonce | client nonce | fingerprint)
+    //   node proof   = HMAC-SHA256(token, "galaxy-node"   | client nonce | node nonce | fingerprint)
+    // The token never crosses the network, a captured proof is useless on another connection, and a client will not
+    // talk to something that does not know the token. Without TLS the frames that follow are neither encrypted nor
+    // integrity-protected.
 
     public static final int HS_OK = 0;
     public static final int HS_VERSION = 1;
     public static final int HS_FINGERPRINT = 2;
     public static final int HS_AUTH = 3;
+    private static final int NONCE_BYTES = 16;
+    private static final int MAX_PROOF_BYTES = 64;
+    private static final java.security.SecureRandom RANDOM = new java.security.SecureRandom();
 
     /** Client side of the handshake; throws with the node's reason if refused. */
     public static void clientHandshake(DataInputStream in, DataOutputStream out, String fingerprint, byte[] token,
@@ -86,8 +94,8 @@ public final class GridProtocol {
         if (version != VERSION) {
             throw new GalaxyException(node + " speaks grid protocol v" + version + ", this client v" + VERSION);
         }
-        byte[] nonce = new byte[16];
-        in.readFully(nonce);
+        byte[] nodeNonce = new byte[NONCE_BYTES];
+        in.readFully(nodeNonce);
         String nodeFingerprint = in.readUTF();
         boolean authRequired = in.readByte() != 0;
         if (!nodeFingerprint.equals(fingerprint)) {
@@ -97,15 +105,27 @@ public final class GridProtocol {
         if (authRequired && token == null) {
             throw new GalaxyException(node + " requires authentication: set authToken for this grid");
         }
-        byte[] proof = token == null ? new byte[0] : hmac(token, nonce);
+        if (!authRequired && token != null) {
+            throw new GalaxyException(node + " does not use authentication but this client is configured with a token; "
+                    + "refusing to talk to it");
+        }
+        byte[] clientNonce = new byte[NONCE_BYTES];
+        RANDOM.nextBytes(clientNonce);
+        byte[] proof = token == null ? new byte[0] : proof(token, "galaxy-client", nodeNonce, clientNonce, fingerprint);
         out.writeUTF(fingerprint);
+        out.write(clientNonce);
         out.writeInt(proof.length);
         out.write(proof);
         out.flush();
         int status = in.readInt();
         String message = in.readUTF();
+        byte[] nodeProof = readProof(in);
         if (status != HS_OK) {
             throw new GalaxyException(node + " refused the connection: " + message);
+        }
+        if (token != null && !java.security.MessageDigest.isEqual(nodeProof,
+                proof(token, "galaxy-node", clientNonce, nodeNonce, fingerprint))) {
+            throw new GalaxyException(node + " refused the connection: it could not prove it knows the authentication token");
         }
     }
 
@@ -116,49 +136,63 @@ public final class GridProtocol {
             return "not a grid client";
         }
         int version = in.readInt();
-        byte[] nonce = new byte[16];
-        new java.security.SecureRandom().nextBytes(nonce);
+        byte[] nodeNonce = new byte[NONCE_BYTES];
+        RANDOM.nextBytes(nodeNonce);
         out.writeInt(MAGIC);
         out.writeInt(VERSION);
-        out.write(nonce);
+        out.write(nodeNonce);
         out.writeUTF(fingerprint);
         out.writeByte(token == null ? 0 : 1);
         out.flush();
         if (version != VERSION) {
-            return "client speaks protocol v" + version; // client gives up after reading our version
+            return "client speaks protocol v" + version; // the client gives up after reading our version
         }
         String clientFingerprint = in.readUTF();
-        int n = in.readInt();
-        if (n < 0 || n > 1024) {
-            return "bad handshake";
-        }
-        byte[] proof = new byte[n];
-        in.readFully(proof);
+        byte[] clientNonce = new byte[NONCE_BYTES];
+        in.readFully(clientNonce);
+        byte[] proof = readProof(in);
         int status = HS_OK;
         String message = "ok";
         if (!fingerprint.equals(clientFingerprint)) {
             status = HS_FINGERPRINT;
             message = "different grid configuration (" + clientFingerprint + " vs " + fingerprint + ")";
-        } else if (token != null && !java.security.MessageDigest.isEqual(proof, hmac(token, nonce))) {
+        } else if (token != null && !java.security.MessageDigest.isEqual(proof,
+                proof(token, "galaxy-client", nodeNonce, clientNonce, fingerprint))) {
             status = HS_AUTH;
             message = "authentication failed";
         }
+        byte[] nodeProof = status == HS_OK && token != null
+                ? proof(token, "galaxy-node", clientNonce, nodeNonce, fingerprint) : new byte[0];
         out.writeInt(status);
         out.writeUTF(message);
+        out.writeInt(nodeProof.length);
+        out.write(nodeProof);
         out.flush();
         return status == HS_OK ? null : message;
     }
 
-    static byte[] hmac(byte[] key, byte[] data) {
+    private static byte[] readProof(DataInputStream in) throws IOException {
+        int n = in.readInt();
+        if (n < 0 || n > MAX_PROOF_BYTES) {
+            throw new IOException("bad handshake proof length " + n);
+        }
+        byte[] proof = new byte[n];
+        in.readFully(proof);
+        return proof;
+    }
+
+    static byte[] proof(byte[] key, String label, byte[] first, byte[] second, String fingerprint) {
         try {
             javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
             mac.init(new javax.crypto.spec.SecretKeySpec(key, "HmacSHA256"));
-            return mac.doFinal(data);
+            mac.update(label.getBytes(StandardCharsets.UTF_8));
+            mac.update(first);
+            mac.update(second);
+            return mac.doFinal(fingerprint.getBytes(StandardCharsets.UTF_8));
         } catch (java.security.GeneralSecurityException e) {
             throw new GalaxyException("HMAC not available", e);
         }
     }
-
     public static void writeFrame(DataOutputStream out, long id, byte opOrStatus, byte[] body, int off, int len)
             throws IOException {
         out.writeInt(9 + len);
@@ -172,10 +206,20 @@ public final class GridProtocol {
     }
 
     public static Frame readFrame(DataInputStream in) throws IOException {
+        return readBody(in, readLength(in));
+    }
+
+    /** The validated length of the next frame. Nothing has been allocated yet. */
+    public static int readLength(DataInputStream in) throws IOException {
         int len = in.readInt();
         if (len < 9 || len > MAX_FRAME + 9) {
             throw new IOException("bad frame length " + len);
         }
+        return len;
+    }
+
+    /** The rest of a frame whose length came from {@link #readLength}. */
+    public static Frame readBody(DataInputStream in, int len) throws IOException {
         long id = in.readLong();
         byte code = in.readByte();
         byte[] body = new byte[len - 9];
@@ -265,6 +309,18 @@ public final class GridProtocol {
 
         public int getInt() {
             return b.getInt();
+        }
+
+        /**
+         * A count of items that take at least {@code minBytes} each. It must be possible for them to fit in what is
+         * left of the frame, so a request claiming billions of items cannot make the reader allocate for them.
+         */
+        public int getCount(int minBytes) {
+            int n = b.getInt();
+            if (n < 0 || n > b.remaining() / minBytes) {
+                throw new GalaxyException("bad item count " + n + " in grid frame");
+            }
+            return n;
         }
 
         public long getLong() {

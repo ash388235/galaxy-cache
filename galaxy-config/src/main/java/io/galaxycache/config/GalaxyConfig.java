@@ -44,6 +44,12 @@ public record GalaxyConfig(String cluster,
             settings = settings == null ? Map.of() : Map.copyOf(settings);
         }
 
+        /** Settings can hold tokens and passwords: only their names are printed. */
+        @Override
+        public String toString() {
+            return "StorageConfig[type=" + type + ", settings=" + settings.keySet() + "]";
+        }
+
         @com.fasterxml.jackson.annotation.JsonCreator
         static StorageConfig fromYaml(Map<String, Object> raw) {
             Map<String, Object> settings = new LinkedHashMap<>(raw);
@@ -64,6 +70,16 @@ public record GalaxyConfig(String cluster,
 
         public int port() {
             return java.net.URI.create(url).getPort();
+        }
+
+        public String host() {
+            return java.net.URI.create(url).getHost();
+        }
+
+        /** Persistence settings can hold database passwords: only their names are printed. */
+        @Override
+        public String toString() {
+            return "IndexNodeConfig[url=" + url + ", persistence=" + persistence + ", settings=" + persistenceSettings.keySet() + "]";
         }
     }
 

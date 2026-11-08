@@ -14,6 +14,7 @@ import java.util.regex.Pattern;
 public record DatasetId(String namespace, String domain, String subDomain, String date) implements Comparable<DatasetId> {
 
     private static final Pattern SEGMENT = Pattern.compile("[A-Za-z0-9][A-Za-z0-9_.\\-]{0,127}");
+    private static final Pattern WINDOWS_DEVICE = Pattern.compile("(?i)(con|prn|aux|nul|com[0-9]|lpt[0-9])(\\..*)?");
 
     public DatasetId {
         check("namespace", namespace);
@@ -34,7 +35,7 @@ public record DatasetId(String namespace, String domain, String subDomain, Strin
     @JsonCreator
     public static DatasetId parse(String key) {
         Objects.requireNonNull(key, "key");
-        String[] p = key.split("/");
+        String[] p = key.split("/", -1);
         if (p.length != 4) {
             throw new IllegalArgumentException("Dataset key must be namespace/domain/subDomain/date: " + key);
         }
@@ -56,8 +57,14 @@ public record DatasetId(String namespace, String domain, String subDomain, Strin
         return key().compareTo(o.key());
     }
 
+    /** Dataset parts become folder names, so anything a file system could treat specially is refused. */
+    public static boolean validSegment(String value) {
+        return value != null && SEGMENT.matcher(value).matches() && !value.endsWith(".")
+                && !WINDOWS_DEVICE.matcher(value).matches();
+    }
+
     private static void check(String what, String value) {
-        if (value == null || !SEGMENT.matcher(value).matches()) {
+        if (!validSegment(value)) {
             throw new IllegalArgumentException(what + " must match " + SEGMENT.pattern() + " but was '" + value + "'");
         }
     }
