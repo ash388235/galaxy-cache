@@ -36,6 +36,46 @@ public final class GridConnection implements AutoCloseable {
     private static final class Pending {
         final CompletableFuture<List<byte[]>> future = new CompletableFuture<>();
         final List<byte[]> parts = new ArrayList<>(2);
+        /** When set, frames are handed to the caller one by one instead of being collected (streaming). */
+        java.util.concurrent.BlockingQueue<Object> queue;
+    }
+
+    /** Marks the end of a streamed response in the queue. */
+    public static final Object END = new Object();
+
+    /**
+     * Sends one request whose (possibly huge) response is consumed frame by frame: each frame body, then
+     * {@link #END}, or an exception, is put into {@code queue}. A bounded queue gives TCP backpressure, so use a
+     * connection dedicated to this stream.
+     */
+    public void stream(byte op, byte[] body, java.util.concurrent.BlockingQueue<Object> queue) {
+        if (closed) {
+            throw new GalaxyException("connection to " + member + " is closed");
+        }
+        long id = ids.incrementAndGet();
+        Pending p = new Pending();
+        p.queue = queue;
+        pending.put(id, p);
+        writeLock.lock();
+        try {
+            GridProtocol.writeFrame(out, id, op, body, 0, body.length);
+            out.flush();
+        } catch (IOException e) {
+            pending.remove(id);
+            fail(e);
+            throw new GalaxyException("send to " + member + " failed: " + e.getMessage(), e);
+        } finally {
+            writeLock.unlock();
+        }
+    }
+
+    private static void offer(Pending p, Object o) throws IOException {
+        try {
+            p.queue.put(o);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("interrupted while streaming", e);
+        }
     }
 
     private final java.util.function.Consumer<String> onLost;
@@ -105,6 +145,23 @@ public final class GridConnection implements AutoCloseable {
                 if (p == null) {
                     continue; // caller gave up (timeout)
                 }
+                if (p.queue != null) {
+                    switch (f.code()) {
+                        case GridProtocol.PART -> offer(p, f.body());
+                        case GridProtocol.LAST -> {
+                            pending.remove(f.id());
+                            offer(p, f.body());
+                            offer(p, END);
+                        }
+                        case GridProtocol.ERROR -> {
+                            pending.remove(f.id());
+                            offer(p, new GalaxyException("grid node " + member.name() + ": "
+                                    + new String(f.body(), StandardCharsets.UTF_8)));
+                        }
+                        default -> throw new IOException("unknown response status " + f.code());
+                    }
+                    continue;
+                }
                 switch (f.code()) {
                     case GridProtocol.PART -> p.parts.add(f.body());
                     case GridProtocol.LAST -> {
@@ -131,7 +188,12 @@ public final class GridConnection implements AutoCloseable {
         }
         closed = true;
         GalaxyException ex = new GalaxyException("connection to grid node " + member + " lost: " + e.getMessage(), e);
-        pending.values().forEach(p -> p.future.completeExceptionally(ex));
+        pending.values().forEach(p -> {
+            p.future.completeExceptionally(ex);
+            if (p.queue != null) {
+                p.queue.offer(ex);
+            }
+        });
         pending.clear();
         try {
             socket.close();
@@ -150,7 +212,12 @@ public final class GridConnection implements AutoCloseable {
             // best effort
         }
         GalaxyException ex = new GalaxyException("connection to " + member + " closed");
-        pending.values().forEach(p -> p.future.completeExceptionally(ex));
+        pending.values().forEach(p -> {
+            p.future.completeExceptionally(ex);
+            if (p.queue != null) {
+                p.queue.offer(ex);
+            }
+        });
         pending.clear();
     }
 }

@@ -148,6 +148,45 @@ public final class GridClient implements AutoCloseable {
         }
     }
 
+    /**
+     * Streams a large response (e.g. SCAN) frame by frame to {@code onFrame}, on the calling thread, over a
+     * connection opened for this stream only. At most a few frames are buffered; a slow consumer slows the node.
+     */
+    public void stream(GridTopology.Member m, byte op, byte[] body, Consumer<byte[]> onFrame) {
+        String f = failure;
+        if (f != null) {
+            throw new GridUnavailableException(f);
+        }
+        java.util.concurrent.BlockingQueue<Object> q = new java.util.concurrent.ArrayBlockingQueue<>(4);
+        GridConnection c = onConnectionLost == null ? new GridConnection(m, Math.min(timeoutMs, 5_000))
+                : new GridConnection(m, Math.min(timeoutMs, 5_000), onConnectionLost);
+        try {
+            c.stream(op, body, q);
+            while (true) {
+                Object o;
+                try {
+                    o = q.poll(timeoutMs, TimeUnit.MILLISECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new GalaxyException("interrupted", e);
+                }
+                if (o == null) {
+                    throw new GalaxyException("stream from " + m + " stalled for " + timeoutMs + " ms");
+                }
+                if (o == GridConnection.END) {
+                    return;
+                }
+                if (o instanceof RuntimeException e) {
+                    String reason = failure;
+                    throw reason != null ? new GridUnavailableException(reason) : e;
+                }
+                onFrame.accept((byte[]) o);
+            }
+        } finally {
+            c.close();
+        }
+    }
+
     private void closeConnections() {
         pools.values().forEach(pool -> {
             for (GridConnection c : pool) {

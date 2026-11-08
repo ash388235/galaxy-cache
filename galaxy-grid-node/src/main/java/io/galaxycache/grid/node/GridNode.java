@@ -60,6 +60,9 @@ public final class GridNode implements AutoCloseable {
     private final String name;
     private final GridTopology topology;
     private final DataStore store;
+    /** Index documents (id -> indexed fields as JSON), written before an index change is acknowledged. */
+    private final DataStore indexStore;
+    private final java.util.Set<DatasetId> indexDatasets = ConcurrentHashMap.newKeySet();
     private final IndexEngine index = new IndexEngine(new NoopIndexPersistence());
     private final ServerSocket server;
     private final HttpServer admin;
@@ -97,9 +100,13 @@ public final class GridNode implements AutoCloseable {
         }
         s.put("path", dataDir.toString());
         this.store = StorageProviders.open("file", "grid-" + name, s);
+        Map<String, Object> is = new LinkedHashMap<>(s);
+        is.put("path", dataDir.resolveSibling(dataDir.getFileName() + "-index").toString());
+        this.indexStore = StorageProviders.open("file", "grid-" + name + "-index", is);
         this.peers = new GridClient(topology, 1, (int) Math.max(2_000, settings.heartbeatMs() * 2));
         try {
             server = new ServerSocket();
+            server.setReuseAddress(true);
             server.setReceiveBufferSize(1024 * 1024);
             server.bind(new InetSocketAddress(port), 256);
             admin = adminPort < 0 ? null : HttpServer.create(new InetSocketAddress(adminPort), 64);
@@ -109,6 +116,7 @@ public final class GridNode implements AutoCloseable {
     }
 
     public GridNode start() {
+        restoreIndex();
         Thread acceptor = new Thread(this::acceptLoop, "galaxy-grid-accept-" + name);
         acceptor.setDaemon(true);
         acceptor.start();
@@ -165,6 +173,74 @@ public final class GridNode implements AutoCloseable {
 
     public String state() {
         return state;
+    }
+
+    private final Map<String, Long> unindexed = new ConcurrentHashMap<>();
+
+    /**
+     * Rebuilds the in-memory index from the node's index store, before the node serves anything, and compares
+     * per dataset how many records and index documents exist. A difference means a write stored the record but
+     * died before its index update (the client got an error); {@code cache.reindex()} repairs it.
+     */
+    private void restoreIndex() {
+        long t0 = System.nanoTime();
+        long docs = 0;
+        for (DatasetId ds : indexStore.listDatasets(null)) {
+            indexDatasets.add(ds);
+            List<IndexDocument> batch = new ArrayList<>(10_000);
+            long[] n = new long[1];
+            indexStore.scan(ds, rec -> {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> fields = Json.read(rec.payload(), Map.class);
+                batch.add(new IndexDocument(rec.id(), fields));
+                n[0]++;
+                if (batch.size() == 10_000) {
+                    index.upsert(ds, List.copyOf(batch));
+                    batch.clear();
+                }
+            });
+            if (!batch.isEmpty()) {
+                index.upsert(ds, batch);
+            }
+            docs += n[0];
+        }
+        for (DatasetId ds : store.listDatasets(null)) {
+            long records = store.stats(ds).liveRecords();
+            long indexed = index.datasetStats().stream().filter(d -> d.dataset().equals(ds))
+                    .mapToLong(Messages.DatasetIndexStats::documents).sum();
+            if (records != indexed) {
+                unindexed.put(ds.key(), records - indexed);
+                LOG.log(System.Logger.Level.WARNING, "grid node {0}: dataset {1} has {2} records but {3} index documents; "
+                        + "run cache.reindex() to repair", name, ds, records, indexed);
+            }
+        }
+        LOG.log(System.Logger.Level.INFO, "grid node {0} restored {1} index documents in {2} ms", name, docs,
+                (System.nanoTime() - t0) / 1_000_000);
+    }
+
+    private void ensureIndexDataset(DatasetId ds) {
+        if (indexDatasets.add(ds)) {
+            indexStore.ensureDataset(new DatasetMetadata(ds, "index-fields", "json", 1, "json", java.time.Instant.now()));
+        }
+    }
+
+    /** Persists index documents (synchronously), then applies them in memory. */
+    private int persistAndIndex(DatasetId ds, List<IndexDocument> docs) {
+        ensureIndexDataset(ds);
+        List<StoredRecord> recs = new ArrayList<>(docs.size());
+        for (IndexDocument d : docs) {
+            recs.add(new StoredRecord(d.id(), 1, Json.writeBytes(d.fields())));
+        }
+        indexStore.putAll(ds, recs);
+        return index.upsert(ds, docs);
+    }
+
+    private void dropIndex(DatasetId ds) {
+        index.drop(ds);
+        if (indexDatasets.remove(ds) || indexStore.listDatasets(ds.namespace()).contains(ds)) {
+            indexStore.dropDataset(ds);
+        }
+        unindexed.remove(ds.key());
     }
 
     /**
@@ -371,7 +447,7 @@ public final class GridNode implements AutoCloseable {
                 }
                 case GridProtocol.DROP_DATASET -> {
                     DatasetId ds = DatasetId.parse(in.getString());
-                    index.drop(ds);
+                    dropIndex(ds);
                     store.dropDataset(ds);
                     r.last(new byte[0]);
                 }
@@ -380,10 +456,13 @@ public final class GridNode implements AutoCloseable {
                     for (IndexDocument d : u.docs()) {
                         checkOwner(d.id());
                     }
-                    r.last(new GridProtocol.Out(4).putInt(index.upsert(u.dataset(), u.docs())).toBytes());
+                    r.last(new GridProtocol.Out(4).putInt(persistAndIndex(u.dataset(), u.docs())).toBytes());
                 }
                 case GridProtocol.INDEX_DELETE -> {
                     Messages.DeleteRequest d = Json.read(req.body(), Messages.DeleteRequest.class);
+                    if (indexDatasets.contains(d.dataset())) {
+                        indexStore.deleteAll(d.dataset(), d.ids());
+                    }
                     r.last(new GridProtocol.Out(4).putInt(index.delete(d.dataset(), d.ids())).toBytes());
                 }
                 case GridProtocol.INDEX_QUERY -> {
@@ -408,7 +487,7 @@ public final class GridNode implements AutoCloseable {
                     } while (from < ids.size());
                 }
                 case GridProtocol.INDEX_DROP -> {
-                    index.drop(Json.read(req.body(), Messages.DropRequest.class).dataset());
+                    dropIndex(Json.read(req.body(), Messages.DropRequest.class).dataset());
                     r.last(new byte[0]);
                 }
                 case GridProtocol.NODE_STATS -> r.last(Json.writeBytes(nodeStats()));
@@ -436,11 +515,17 @@ public final class GridNode implements AutoCloseable {
 
     // ------------------------------------------------------------------ stats
 
+    /** This node's own stats (tests and tools). */
+    public Messages.StatsResponse nodeStatsForTest() {
+        return nodeStats();
+    }
+
     Messages.StatsResponse nodeStats() {
         Map<String, Long> c = new TreeMap<>(index.counters());
         counters.forEach((k, v) -> c.put("node." + k, v.get()));
         c.put("partitionsOwned", (long) topology.partitionCounts().get(name));
         c.put("ready", NodeStatus.READY.equals(state) ? 1L : 0L);
+        unindexed.forEach((k, v) -> c.put("unindexedRecords." + k, v));
         List<String> namespaces = index.datasetStats().stream().map(d -> d.dataset().namespace()).distinct().toList();
         return new Messages.StatsResponse(name, startedAt, "none (grid phase 1)", namespaces, index.datasetStats(), c);
     }
@@ -523,5 +608,6 @@ public final class GridNode implements AutoCloseable {
         peers.close();
         index.close();
         store.close();
+        indexStore.close();
     }
 }

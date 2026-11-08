@@ -164,14 +164,12 @@ public final class GridDataStore implements DataStore, IndexingStore {
         return n;
     }
 
-    /** Streams every record from every node (node by node). */
+    /** Streams every record from every node (node by node), a few MB at a time: never the whole dataset in memory. */
     @Override
     public void scan(DatasetId dataset, Consumer<StoredRecord> consumer) {
         byte[] body = new GridProtocol.Out().putString(dataset.key()).toBytes();
         for (GridTopology.Member m : grid.topology().members()) {
-            for (byte[] f : grid.call(m, GridProtocol.SCAN, body)) {
-                GridRecords.readRecordFrame(f, consumer);
-            }
+            grid.stream(m, GridProtocol.SCAN, body, f -> GridRecords.readRecordFrame(f, consumer));
         }
     }
 

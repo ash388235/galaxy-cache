@@ -355,6 +355,48 @@ class GridEndToEndTest {
     }
 
     @Test
+    void indexSurvivesAFullRestartWithoutReindex() {
+        DatasetId ds = DatasetId.of("orders", "eq", "us", "2026-11-08");
+        List<Order> all = new ArrayList<>();
+        for (int i = 0; i < 2_000; i++) {
+            all.add(new Order(i));
+        }
+        try (GalaxyClient client = new GalaxyClient(config)) {
+            GalaxyCache<Order> orders = client.cache(ds, Order.class);
+            orders.putAll(all);
+            orders.deleteByKey(all.get(10)); // ORD-000010, an NVDA order
+            Order moved = all.get(11);
+            moved.symbol = "IBM";
+            orders.put(moved);
+        }
+        // a record stored without its index update (as if the client died between the two calls)
+        GridTopology.Member owner = topology.ownerOf("ORD-999999");
+        try (GridClient raw = new GridClient(topology, 1, 5_000)) {
+            raw.call(owner, GridProtocol.PUT_RECORDS, GridRecords.records(ds.key(),
+                    List.of(new StoredRecord("ORD-999999", 1, new io.galaxycache.common.codec.BinaryCodec().encode(new Order(999_999))))));
+        }
+
+        // stop the whole grid and start it again on the same folders
+        nodes.forEach(GridNode::close);
+        nodes.clear();
+        failStops.clear();
+        startNodes("node-1", "node-2", "node-3");
+        awaitNodesReady();
+
+        try (GalaxyClient client = new GalaxyClient(config)) {
+            GalaxyCache<Order> orders = client.cache(ds, Order.class);
+            assertEquals(1_999, orders.count(all()));                    // no reindex needed
+            assertEquals(499, orders.count(eq("symbol", "NVDA")));
+            assertEquals(List.of("ORD-000011"), orders.queryIds(Query.where(eq("symbol", "IBM"))));
+            assertEquals(2_000, orders.stats().liveRecords());           // includes the unindexed record
+            GridNode ownerNode = nodes.stream().filter(n -> n.name().equals(owner.name())).findFirst().orElseThrow();
+            assertEquals(1L, ownerNode.nodeStatsForTest().counters().get("unindexedRecords." + ds.key()));
+            orders.reindex();                                            // repairs it
+            assertEquals(2_000, orders.count(all()));
+        }
+    }
+
+    @Test
     void mergeKeepsGlobalOrderAndPaging() {
         List<List<String>> lists = List.of(List.of("a", "d", "g"), List.of("b", "e"), List.of("c", "f", "h"));
         assertEquals(List.of("a", "b", "c", "d", "e", "f", "g", "h"), GridIndexClient.mergeSorted(lists, 0, Query.NO_LIMIT));
