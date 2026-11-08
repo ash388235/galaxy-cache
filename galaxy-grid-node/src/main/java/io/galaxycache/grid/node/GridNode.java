@@ -149,7 +149,11 @@ public final class GridNode implements AutoCloseable {
         former.start();
         if (admin != null) {
             admin.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
-            admin.createContext("/health", ex -> http(ex, 200, "{\"status\":\"up\",\"node\":\"" + name + "\"}"));
+            admin.createContext("/health", ex -> {
+                boolean ready = NodeStatus.READY.equals(state);
+                http(ex, ready ? 200 : 503, "{\"status\":\"" + state + "\",\"node\":\"" + name + "\"}");
+            });
+            admin.createContext("/metrics", ex -> http(ex, 200, metrics()));
             admin.createContext("/v1/stats", ex -> {
                 boolean local = ex.getRequestURI().getQuery() != null && ex.getRequestURI().getQuery().contains("local");
                 http(ex, 200, Json.write(local ? nodeStats() : clusterStats()));
@@ -685,6 +689,47 @@ public final class GridNode implements AutoCloseable {
         docs.forEach((k, v) -> ds.add(new Messages.DatasetIndexStats(k, v[0], fields.get(k))));
         return new Messages.StatsResponse("grid (" + up + "/" + topology.members().size() + " nodes up)", startedAt,
                 "none (grid phase 1)", namespaces, ds, c);
+    }
+
+    /** Prometheus text format: state, traffic, per-dataset sizes and JVM heap of this node. */
+    String metrics() {
+        StringBuilder m = new StringBuilder(2048);
+        String id = "node=\"" + name + "\"";
+        metric(m, "galaxy_grid_node_ready", "gauge", "1 when the node is serving", id, NodeStatus.READY.equals(state) ? 1 : 0);
+        metric(m, "galaxy_grid_node_uptime_seconds", "gauge", "Seconds since the node started", id,
+                (System.currentTimeMillis() - startedAt) / 1000);
+        metric(m, "galaxy_grid_partitions_owned", "gauge", "Partitions owned by this node", id, topology.partitionCounts().get(name));
+        for (String[] c : new String[][]{{"requests", "requests"}, {"errors", "errors"}, {"recordsRead", "records_read"},
+                {"recordsWritten", "records_written"}, {"connectionsRefused", "connections_refused"},
+                {"recordsMovedOut", "records_moved_out"}}) {
+            AtomicLong v = counters.get(c[0]);
+            metric(m, "galaxy_grid_" + c[1] + "_total", "counter", "Count of " + c[1].replace('_', ' '), id, v == null ? 0 : v.get());
+        }
+        Runtime rt = Runtime.getRuntime();
+        metric(m, "galaxy_jvm_heap_used_bytes", "gauge", "JVM heap in use", id, rt.totalMemory() - rt.freeMemory());
+        metric(m, "galaxy_jvm_heap_max_bytes", "gauge", "JVM maximum heap", id, rt.maxMemory());
+        Map<String, Long> docs = new TreeMap<>();
+        index.datasetStats().forEach(d -> docs.put(d.dataset().key(), d.documents()));
+        if (NodeStatus.READY.equals(state)) {
+            for (DatasetId ds : store.listDatasets(null)) {
+                DatasetStats st = store.stats(ds);
+                String l = id + ",dataset=\"" + ds.key() + "\"";
+                metric(m, "galaxy_grid_dataset_records", "gauge", "Live records in the dataset", l, st.liveRecords());
+                metric(m, "galaxy_grid_dataset_bytes", "gauge", "Bytes on disk including old versions", l, st.bytesOnDisk());
+                metric(m, "galaxy_grid_dataset_index_documents", "gauge", "Index documents", l, docs.getOrDefault(ds.key(), 0L));
+                metric(m, "galaxy_grid_dataset_unindexed_records", "gauge", "Records with no index entry", l, unindexed.getOrDefault(ds.key(), 0L));
+                metric(m, "galaxy_grid_dataset_misplaced_keys", "gauge", "Keys owned by another node", l, misplaced.getOrDefault(ds.key(), 0L));
+            }
+        }
+        return m.toString();
+    }
+
+    private void metric(StringBuilder m, String name, String type, String help, String labels, long value) {
+        if (m.indexOf("# TYPE " + name + " ") < 0) {
+            m.append("# HELP ").append(name).append(' ').append(help).append('\n');
+            m.append("# TYPE ").append(name).append(' ').append(type).append('\n');
+        }
+        m.append(name).append('{').append(labels).append("} ").append(value).append('\n');
     }
 
     private void count(String k, long d) {

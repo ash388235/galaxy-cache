@@ -1,0 +1,9 @@
+# Grid node image. Build from the repository root after `mvn package`:
+#   docker build -f deploy/Dockerfile.grid-node -t galaxy-grid-node .
+# Run with the config mounted, data on a volume, and bindAddress: 0.0.0.0 in the grid settings:
+#   docker run -v /etc/galaxy:/etc/galaxy -v /data/galaxy:/data/galaxy -p 7101:7101 -p 7201:7201 \
+#     -e GALAXY_NODE=node-1 -e GALAXY_GRID_TOKEN=... galaxy-grid-node
+FROM eclipse-temurin:21-jre
+COPY galaxy-grid-node/target/galaxy-grid-node.jar /opt/galaxy/galaxy-grid-node.jar
+ENV GALAXY_HEAP=4g GALAXY_CONFIG=/etc/galaxy/galaxy.yaml GALAXY_GRID=grid-1
+ENTRYPOINT ["sh", "-c", "exec java -Xmx$GALAXY_HEAP -XX:+ExitOnOutOfMemoryError -jar /opt/galaxy/galaxy-grid-node.jar --config $GALAXY_CONFIG --grid $GALAXY_GRID --node $GALAXY_NODE"]

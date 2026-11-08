@@ -1,0 +1,21 @@
+# One grid node. Install as /etc/systemd/system/galaxy-grid-node@.service, then:
+#   systemctl start galaxy-grid-node@node-1
+#
+# Restart=no is deliberate: under the fail-stop model a node that stopped must not rejoin by itself.
+# The running nodes have stopped too; restart all of them together (docs/RUNBOOK.md).
+[Unit]
+Description=Galaxy Cache grid node %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=galaxy
+EnvironmentFile=-/etc/galaxy/grid.env
+ExecStart=/opt/galaxy/scripts/start-grid-node.sh %i /etc/galaxy/galaxy.yaml grid-1
+Restart=no
+LimitNOFILE=65536
+# exit status 2 is a fail-stop, not a crash of this service's own making, but it is left visible on purpose
+SuccessExitStatus=143
+
+[Install]
+WantedBy=multi-user.target
