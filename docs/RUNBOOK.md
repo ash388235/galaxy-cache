@@ -107,6 +107,24 @@ Measured with BaseTransaction objects (about 28 KB binary).
 | Node heap for the index (6 indexed fields) | 1.6 GB in use across the grid (measured); allow 2–3 GB |
 | Client heap if objects are kept decoded | about 136 GB |
 
+## Verify a deployment
+
+Run these from a client host against a running grid. They use their own datasets, except that `GridUseCases` reads the
+`grid/txn/perf1m` sample data, so adjust it or load that data first.
+
+```bash
+# concurrent writers, readers and compaction checked against an exact model; exits non-zero on any violation
+java -cp galaxy-examples.jar io.galaxycache.examples.sizing.GridSoak --config galaxy.yaml --minutes 20
+# crash test: start this, kill a node, restart the grid, then verify every acknowledged write
+java -cp galaxy-examples.jar io.galaxycache.examples.sizing.GridSoak --config galaxy.yaml --until-failure --model soak.bin
+java -cp galaxy-examples.jar io.galaxycache.examples.sizing.GridSoak --config galaxy.yaml --verify-only --model soak.bin
+```
+
+Tested so far, all on one Windows laptop with 3 nodes: 40 use cases on 1M objects, 3 rounds of killing a node
+mid-write, and a 20-minute soak (4.5M writes, 3 compactions) with no violations. Killing a process does not lose
+what the OS has buffered, so a power-loss test on real hardware is still to be done. Also not yet done: a 24-hour soak,
+restart time at 5M objects, and 3 separate machines on a real network.
+
 ## Known limits
 
 - The Linux script, systemd unit and Dockerfile in `scripts/` and `deploy/` have not been run yet; this project has only
