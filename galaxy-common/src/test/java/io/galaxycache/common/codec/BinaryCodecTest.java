@@ -218,4 +218,52 @@ class BinaryCodecTest {
         assertArrayEquals(codec.encode(t), codec.encode(t));
         assertTrue(Objects.nonNull(codec.decode(codec.encode(t), 1, Txn.class)));
     }
-}
+
+    static class Edges {
+        String empty = "";
+        String nothing;
+        String unicode = "Zürich ₹ 取引";
+        long minLong = Long.MIN_VALUE;
+        long maxLong = Long.MAX_VALUE;
+        int minInt = Integer.MIN_VALUE;
+        double nan = Double.NaN;
+        double negZero = -0.0;
+        boolean flag = true;
+        java.time.LocalDate noDate;
+        java.time.LocalDate early = java.time.LocalDate.of(1600, 2, 29);
+        BigDecimal noAmount;
+        BigDecimal zero = new BigDecimal("0.00");
+        BigDecimal negative = new BigDecimal("-1.5");
+        BigDecimal negativeScale = new BigDecimal("1E+5");
+        BigDecimal longMin = new BigDecimal(Long.MIN_VALUE).movePointLeft(4);
+        BigDecimal justOver8Bytes = new BigDecimal(java.math.BigInteger.ONE.shiftLeft(64)).movePointLeft(2);
+        BigDecimal huge = new BigDecimal("-123456789012345678901234567890.123456789");
+    }
+
+    @Test
+    void directFieldPathsHandleEdgeValues() {
+        BinaryCodec codec = new BinaryCodec();
+        Edges in = new Edges();
+        in.minLong = Long.MIN_VALUE + 1; // differ from the constructor default, so the value must really be decoded
+        in.flag = false;
+        in.empty = "changed";
+        in.zero = new BigDecimal("0.000");
+        Edges out = new Edges();
+        out = codec.decode(codec.encode(in), 1, Edges.class);
+        assertEquals(in.empty, out.empty);
+        assertNull(out.nothing);
+        assertEquals(in.unicode, out.unicode);
+        assertEquals(in.minLong, out.minLong);
+        assertEquals(in.maxLong, out.maxLong);
+        assertEquals(in.minInt, out.minInt);
+        assertTrue(Double.isNaN(out.nan));
+        assertEquals(Double.doubleToRawLongBits(-0.0), Double.doubleToRawLongBits(out.negZero));
+        assertFalse(out.flag);
+        assertNull(out.noDate);
+        assertEquals(in.early, out.early);
+        assertNull(out.noAmount);
+        for (java.util.function.Function<Edges, BigDecimal> g : List.<java.util.function.Function<Edges, BigDecimal>>of(
+                e -> e.zero, e -> e.negative, e -> e.negativeScale, e -> e.longMin, e -> e.justOver8Bytes, e -> e.huge)) {
+            assertEquals(g.apply(in), g.apply(out)); // BigDecimal.equals: same value and same scale
+        }
+    }}

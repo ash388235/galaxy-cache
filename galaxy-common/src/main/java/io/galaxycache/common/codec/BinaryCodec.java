@@ -202,15 +202,19 @@ public final class BinaryCodec implements Codec {
         private final Handler[] handlers;
         private final Constructor<?> ctor;
         private final RecordComponent[] components;
+        /** Direct code path per field for the common types (same bytes as the handlers, no boxing or dispatch). */
+        private final int[] kinds;
 
         Schema(Class<?> c) {
             this.type = c;
             List<Slot> slots = slotsOf(c);
             this.handlers = new Handler[slots.size()];
             this.fields = new Field[slots.size()];
+            this.kinds = new int[slots.size()];
             for (int i = 0; i < slots.size(); i++) {
                 handlers[i] = handlerFor(slots.get(i).type());
                 fields[i] = slots.get(i).field();
+                kinds[i] = kindOf(slots.get(i).type());
             }
             try {
                 if (c.isRecord()) {
@@ -243,7 +247,15 @@ public final class BinaryCodec implements Codec {
                 return;
             }
             for (int i = 0; i < fields.length; i++) {
-                handlers[i].write(out, fields[i].get(o));
+                Field f = fields[i];
+                switch (kinds[i]) {
+                    case K_STRING -> out.writeString((String) f.get(o));
+                    case K_DOUBLE -> out.writeLong(Double.doubleToRawLongBits(f.getDouble(o)));
+                    case K_LONG -> out.writeVarLong(zig(f.getLong(o)));
+                    case K_INT -> out.writeVarLong(zig(f.getInt(o)));
+                    case K_BOOLEAN -> out.writeByte(f.getBoolean(o) ? 1 : 0);
+                    default -> handlers[i].write(out, f.get(o));
+                }
             }
         }
 
@@ -257,9 +269,16 @@ public final class BinaryCodec implements Codec {
             }
             Object o = ctor.newInstance();
             for (int i = 0; i < fields.length; i++) {
-                Object v = handlers[i].read(in);
-                if (v != null || !fields[i].getType().isPrimitive()) {
-                    fields[i].set(o, v);
+                Field f = fields[i];
+                switch (kinds[i]) {
+                    case K_STRING -> f.set(o, in.readNullableString());
+                    case K_DOUBLE -> f.setDouble(o, Double.longBitsToDouble(in.readLong()));
+                    case K_LONG -> f.setLong(o, unzig(in.readVarLong()));
+                    case K_INT -> f.setInt(o, (int) unzig(in.readVarLong()));
+                    case K_BOOLEAN -> f.setBoolean(o, in.readByte() != 0);
+                    case K_BIG_DECIMAL -> f.set(o, in.readByte() == 0 ? null : in.readBigDecimal());
+                    case K_LOCAL_DATE -> f.set(o, in.readByte() == 0 ? null : LocalDate.ofEpochDay(unzig(in.readVarLong())));
+                    default -> f.set(o, handlers[i].read(in));
                 }
             }
             return o;
@@ -269,6 +288,37 @@ public final class BinaryCodec implements Codec {
         public String toString() {
             return type.getName();
         }
+    }
+
+    private static final int K_OTHER = 0;
+    private static final int K_STRING = 1;
+    private static final int K_DOUBLE = 2;
+    private static final int K_LONG = 3;
+    private static final int K_INT = 4;
+    private static final int K_BOOLEAN = 5;
+    private static final int K_BIG_DECIMAL = 6;
+    private static final int K_LOCAL_DATE = 7;
+
+    private static int kindOf(Type t) {
+        if (t == String.class) {
+            return K_STRING;
+        }
+        if (t == double.class) {
+            return K_DOUBLE;
+        }
+        if (t == long.class) {
+            return K_LONG;
+        }
+        if (t == int.class) {
+            return K_INT;
+        }
+        if (t == boolean.class) {
+            return K_BOOLEAN;
+        }
+        if (t == BigDecimal.class) {
+            return K_BIG_DECIMAL;
+        }
+        return t == LocalDate.class ? K_LOCAL_DATE : K_OTHER;
     }
 
     // ================================================================== handlers
@@ -666,6 +716,9 @@ public final class BinaryCodec implements Codec {
 
     // ================================================================== byte buffers
 
+    private static final java.lang.invoke.VarHandle LONG_BE = java.lang.invoke.MethodHandles
+            .byteArrayViewVarHandle(long[].class, java.nio.ByteOrder.BIG_ENDIAN);
+
     private static final class Out {
         private byte[] buf;
         private int pos;
@@ -700,9 +753,19 @@ public final class BinaryCodec implements Codec {
 
         void writeLong(long v) {
             ensure(8);
-            for (int s = 56; s >= 0; s -= 8) {
-                buf[pos++] = (byte) (v >>> s);
+            LONG_BE.set(buf, pos, v);
+            pos += 8;
+        }
+
+        /** Same bytes as the STRING handler: length + 1 (0 = null), then UTF-8. */
+        void writeString(String s) {
+            if (s == null) {
+                writeVarLong(0);
+                return;
             }
+            byte[] b = s.getBytes(StandardCharsets.UTF_8);
+            writeVarLong(b.length + 1L);
+            writeBytes(b);
         }
 
         /** Unsigned LEB128. */
@@ -750,14 +813,36 @@ public final class BinaryCodec implements Codec {
 
         long readLong() {
             need(8);
-            long v = 0;
-            for (int i = 0; i < 8; i++) {
-                v = (v << 8) | (buf[pos++] & 0xFF);
-            }
+            long v = (long) LONG_BE.get(buf, pos);
+            pos += 8;
             return v;
         }
 
+        String readNullableString() {
+            int n = (int) readVarLong();
+            return n == 0 ? null : readString(n - 1);
+        }
+
+        /** Same bytes as the BigDecimal handler; values up to 8 bytes are built from a long, without arrays. */
+        BigDecimal readBigDecimal() {
+            int scale = (int) unzig(readVarLong());
+            int len = (int) readVarLong() - 1;
+            if (len < 1 || len > 8) {
+                return new BigDecimal(new BigInteger(readBytes(len)), scale);
+            }
+            need(len);
+            long v = buf[pos]; // sign-extends
+            for (int i = 1; i < len; i++) {
+                v = (v << 8) | (buf[pos + i] & 0xFF);
+            }
+            pos += len;
+            return BigDecimal.valueOf(v, scale);
+        }
+
         long readVarLong() {
+            if (pos < buf.length && buf[pos] >= 0) {
+                return buf[pos++]; // most values fit in one byte
+            }
             long v = 0;
             for (int shift = 0; shift < 64; shift += 7) {
                 byte b = readByte();
