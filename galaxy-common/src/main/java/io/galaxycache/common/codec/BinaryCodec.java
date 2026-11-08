@@ -120,8 +120,13 @@ public final class BinaryCodec implements Codec {
         return FINGERPRINTS.computeIfAbsent(root, r -> {
             StringBuilder sb = new StringBuilder();
             describe(r, sb, new HashSet<>());
+            String schema = sb.toString();
+            io.galaxycache.common.domain.GalaxyDomain d = r.getAnnotation(io.galaxycache.common.domain.GalaxyDomain.class);
+            if (d != null && !d.originalClass().isBlank()) {
+                schema = schema.replace(r.getName(), d.originalClass()); // also covers nested classes (Outer$Inner)
+            }
             CRC32 crc = new CRC32();
-            crc.update(sb.toString().getBytes(StandardCharsets.UTF_8));
+            crc.update(schema.getBytes(StandardCharsets.UTF_8));
             return (int) crc.getValue();
         });
     }

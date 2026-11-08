@@ -24,4 +24,11 @@ public @interface GalaxyDomain {
      * Empty means the client's codec, which is JSON unless the client was built with another.
      */
     String codec() default "";
+
+    /**
+     * For a domain class renamed to keep reading old data (for example {@code TradeV1} during a migration): the fully
+     * qualified name the class had when its records were written. The binary codec's stored schema fingerprint
+     * includes class names, so without this a renamed class could not read them. Nested classes follow the outer one.
+     */
+    String originalClass() default "";
 }

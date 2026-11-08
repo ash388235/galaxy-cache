@@ -115,6 +115,108 @@ class EndToEndTest {
         }
     }
 
+    // ---- a domain as it was written, the same class renamed to read old data, and the changed class
+
+    @GalaxyDomain(name = "Tx", version = 1, codec = "binary")
+    public static class TxOriginal {
+        @io.galaxycache.common.domain.GalaxyKey String id;
+        @Indexed String sym;
+        Detail detail = new Detail();
+
+        public static class Detail {
+            int lots;
+        }
+    }
+
+    @GalaxyDomain(name = "Tx", version = 1, codec = "binary",
+            originalClass = "io.galaxycache.client.EndToEndTest$TxOriginal")
+    public static class TxV1 {
+        @io.galaxycache.common.domain.GalaxyKey String id;
+        @Indexed String sym;
+        Detail detail = new Detail();
+
+        public static class Detail {
+            int lots;
+        }
+    }
+
+    /** Same shape and name as TxV1 but no originalClass: must be refused rather than misread. */
+    @GalaxyDomain(name = "Tx", version = 1, codec = "binary")
+    public static class TxRenamedWithoutAlias {
+        @io.galaxycache.common.domain.GalaxyKey String id;
+        @Indexed String sym;
+        Detail detail = new Detail();
+
+        public static class Detail {
+            int lots;
+        }
+    }
+
+    @GalaxyDomain(name = "Tx", version = 2, codec = "binary")
+    public static class TxV2 {
+        @io.galaxycache.common.domain.GalaxyKey String id;
+        @Indexed String symbol; // renamed
+        @Indexed String currency; // new
+        long lots; // moved up from the nested class
+    }
+
+    @Test
+    void changingADomainClassMigratesToANewDataset() {
+        DatasetId oldDs = DatasetId.of("trading", "tx", "us", "2026-11-07");
+        DatasetId newDs = DatasetId.of("trading", "tx", "us", "2026-11-08");
+        try (GalaxyClient writer = new GalaxyClient(config)) {
+            GalaxyCache<TxOriginal> c = writer.cache(oldDs, TxOriginal.class);
+            List<TxOriginal> list = new ArrayList<>();
+            for (int i = 0; i < 2_500; i++) {
+                TxOriginal t = new TxOriginal();
+                t.id = String.format("X%05d", i);
+                t.sym = i % 2 == 0 ? "AAPL" : "MSFT";
+                t.detail.lots = i;
+                list.add(t);
+            }
+            c.putAll(list);
+        }
+        try (GalaxyClient renamed = new GalaxyClient(config)) {
+            GalaxyException e = assertThrows(GalaxyException.class,
+                    () -> renamed.cache(oldDs, TxRenamedWithoutAlias.class).get("X00001"));
+            assertTrue(e.getMessage().contains("different class shape"), e.getMessage());
+        }
+        try (GalaxyClient client = new GalaxyClient(config)) {
+            assertEquals(7, client.cache(oldDs, TxV1.class).get("X00007").orElseThrow().detail.lots);
+
+            java.util.function.Function<TxV1, TxV2> convert = o -> {
+                if (o.detail.lots == 13) {
+                    return null; // conversions may drop objects
+                }
+                TxV2 n = new TxV2();
+                n.id = o.id;
+                n.symbol = o.sym;
+                n.currency = "USD";
+                n.lots = o.detail.lots;
+                return n;
+            };
+            DatasetMigration.Result r = DatasetMigration.run(client, oldDs, TxV1.class, newDs, TxV2.class, convert);
+            assertEquals(2_500, r.source());
+            assertEquals(2_499, r.copied());
+            assertEquals(1, r.skipped());
+
+            GalaxyCache<TxV2> v2 = client.cache(newDs, TxV2.class);
+            assertEquals(2_499, v2.count(all()));
+            assertEquals(2_499, v2.count(eq("currency", "USD")));
+            assertEquals(1_250, v2.count(eq("symbol", "AAPL")));
+            assertEquals(1234, v2.get("X01234").orElseThrow().lots);
+            assertTrue(v2.get("X00013").isEmpty());
+            assertEquals(2, v2.metadata().domainVersion());
+
+            // the old data is untouched, and running it again is harmless
+            assertEquals(2_500, client.cache(oldDs, TxV1.class).count(all()));
+            assertEquals(2_499, DatasetMigration.run(client, oldDs, TxV1.class, newDs, TxV2.class, convert).copied());
+            assertEquals(2_499, v2.count(all()));
+
+            assertThrows(GalaxyException.class, () -> DatasetMigration.run(client, oldDs, TxV1.class, oldDs, TxV1.class, o -> o));
+        }
+    }
+
     @TempDir
     Path tmp;
     GalaxyConfig config;

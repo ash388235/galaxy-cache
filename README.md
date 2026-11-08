@@ -134,6 +134,26 @@ Each node moves the records and index entries it no longer owns straight to thei
 `java -cp galaxy-examples.jar io.galaxycache.grid.client.GridCompact --config galaxy.yaml --grid grid-1`. Each node
 rewrites its live records into new segments and removes the old ones, so it needs free disk about the size of its
 live data. Reads keep working; writes wait. A crash at any point loses nothing.
+## Changing a domain class
+
+Binary-coded records are positional, so a changed class cannot read old records. Reading them is refused with a
+clear error rather than returning wrong data. To change a class:
+
+1. Copy the current class to a new name, for example `TradeV1`, and keep its `version`. Add
+   `originalClass = "com.acme.Trade"` to its `@GalaxyDomain` so it can still read what was written.
+2. Change `Trade` and increase its `version`.
+3. Copy the data to a new dataset through a conversion function, then point the application at it:
+
+```java
+DatasetMigration.Result r = DatasetMigration.run(client, oldDataset, TradeV1.class, newDataset, Trade.class,
+        old -> { Trade t = new Trade(); t.id = old.id; t.currency = "USD"; return t; });
+client.dropDataset(oldDataset);   // once you have checked the new dataset
+```
+
+The tool needs the old dataset's index, copies in parallel, can be re-run, and fails if the counts do not match.
+Returning `null` from the conversion leaves that object out. The `java` codec relies on Java serialization's own
+rules instead (`serialVersionUID`, compatible field changes).
+
 ## v1 limits
 
 Local file storage only; shared file stores have no compaction (updates and deletes append, old versions stay on disk); Postgres persistence is an untested stub; all clients must use the same domain version; a failed index call after a successful storage write needs `reindex()` (grid nodes report such records as `unindexedRecords` at startup). Grid: no backups or failover by design (fail-stop), no live rebalancing, compaction is a manual job (`GridCompact`).
