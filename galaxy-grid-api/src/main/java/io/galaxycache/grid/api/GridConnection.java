@@ -38,8 +38,16 @@ public final class GridConnection implements AutoCloseable {
         final List<byte[]> parts = new ArrayList<>(2);
     }
 
+    private final java.util.function.Consumer<String> onLost;
+
     public GridConnection(GridTopology.Member member, int connectTimeoutMs) {
+        this(member, connectTimeoutMs, reason -> { });
+    }
+
+    /** @param onLost called once if the connection breaks (not when {@link #close()} is called) */
+    public GridConnection(GridTopology.Member member, int connectTimeoutMs, java.util.function.Consumer<String> onLost) {
         this.member = member;
+        this.onLost = onLost;
         try {
             socket = new Socket();
             socket.setTcpNoDelay(true);
@@ -130,6 +138,7 @@ public final class GridConnection implements AutoCloseable {
         } catch (IOException ignored) {
             // already broken
         }
+        onLost.accept("connection to grid node " + member.name() + " lost: " + e.getMessage());
     }
 
     @Override

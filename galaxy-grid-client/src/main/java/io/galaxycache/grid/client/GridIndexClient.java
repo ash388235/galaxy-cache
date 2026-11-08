@@ -113,7 +113,7 @@ public final class GridIndexClient implements IndexClient {
 
     @Override
     public boolean healthy() {
-        return grid.ping().size() == grid.topology().members().size();
+        return grid.failure() == null;
     }
 
     @Override

@@ -11,6 +11,9 @@ public final class DashboardMain {
     }
 
     public static void main(String[] args) throws InterruptedException {
+        // the dashboard watches the grid; it must never exit with it, nor wait long for it to start
+        System.setProperty("galaxy.grid.onFailure", "throw");
+        System.setProperty("galaxy.grid.startupWaitMs", "2000");
         String config = "galaxy.yaml";
         int port = 8080;
         for (int i = 0; i + 1 < args.length; i += 2) {

@@ -33,6 +33,7 @@ import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
+import java.util.function.Supplier;
 
 /**
  * Dashboard web server: a single HTML page plus JSON endpoints over the namespace catalog, storage sizes,
@@ -123,7 +124,8 @@ public final class DashboardServer implements AutoCloseable {
     List<ScopeOption> scopes() {
         List<ScopeOption> out = new ArrayList<>();
         new TreeMap<>(catalog.all()).forEach((ns, nc) -> out.add(new ScopeOption(ns,
-                store(nc.storage()).listDatasets(ns).stream().map(DatasetId::key).sorted().toList())));
+                guarded(nc.storage(), () -> store(nc.storage()).listDatasets(ns), List.<DatasetId>of())
+                        .stream().map(DatasetId::key).sorted().toList())));
         return out;
     }
 
@@ -163,18 +165,21 @@ public final class DashboardServer implements AutoCloseable {
             if (!scope.includesNamespace(ns)) {
                 return;
             }
-            DataStore store = store(nc.storage());
-            for (DatasetId ds : store.listDatasets(ns)) {
-                if (!scope.includesDataset(ds.key())) {
-                    continue;
+            guarded(nc.storage(), () -> {
+                DataStore store = store(nc.storage());
+                for (DatasetId ds : store.listDatasets(ns)) {
+                    if (!scope.includesDataset(ds.key())) {
+                        continue;
+                    }
+                    DatasetStats st = store.stats(ds);
+                    DatasetMetadata md = store.metadata(ds).orElse(null);
+                    rows.add(new DatasetRow(ds.key(), ns, nc.storage(), nc.indexNode(),
+                            md == null ? "?" : md.domainName(), md == null ? 0 : md.domainVersion(),
+                            md == null ? null : md.codec(), st.liveRecords(), indexDocs.getOrDefault(ds, -1L),
+                            st.bytesOnDisk(), st.files(), md == null ? null : md.createdAt().toString()));
                 }
-                DatasetStats st = store.stats(ds);
-                DatasetMetadata md = store.metadata(ds).orElse(null);
-                rows.add(new DatasetRow(ds.key(), ns, nc.storage(), nc.indexNode(),
-                        md == null ? "?" : md.domainName(), md == null ? 0 : md.domainVersion(),
-                        md == null ? null : md.codec(), st.liveRecords(), indexDocs.getOrDefault(ds, -1L),
-                        st.bytesOnDisk(), st.files(), md == null ? null : md.createdAt().toString()));
-            }
+                return null;
+            }, null);
         });
         return rows;
     }
@@ -302,6 +307,33 @@ public final class DashboardServer implements AutoCloseable {
         return ms <= 0 ? 0 : Math.round(recs / (ms / 1000));
     }
 
+    private final Map<String, Long> storeDownUntil = new ConcurrentHashMap<>();
+
+    /**
+     * Runs {@code action} against one storage; if that storage is down (e.g. the grid failed or is starting),
+     * the dashboard skips it for 15 s instead of failing the whole page, and reopens it afterwards.
+     */
+    private <R> R guarded(String storage, Supplier<R> action, R fallback) {
+        Long until = storeDownUntil.get(storage);
+        if (until != null && until > System.currentTimeMillis()) {
+            return fallback;
+        }
+        try {
+            return action.get();
+        } catch (RuntimeException e) {
+            storeDownUntil.put(storage, System.currentTimeMillis() + 15_000);
+            DataStore s = stores.remove(storage);
+            if (s != null) {
+                try {
+                    s.close();
+                } catch (RuntimeException ignored) {
+                    // already broken
+                }
+            }
+            return fallback;
+        }
+    }
+
     private DataStore store(String name) {
         return stores.computeIfAbsent(name, n -> {
             GalaxyConfig.StorageConfig sc = config.storage(n);
@@ -314,7 +346,7 @@ public final class DashboardServer implements AutoCloseable {
             HttpResponse<byte[]> r = http.send(HttpRequest.newBuilder(URI.create(url + "/v1/stats"))
                     .timeout(Duration.ofSeconds(2)).GET().build(), HttpResponse.BodyHandlers.ofByteArray());
             return r.statusCode() == 200 ? Json.read(r.body(), Messages.StatsResponse.class) : null;
-        } catch (IOException e) {
+        } catch (IOException | RuntimeException e) {
             return null;
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

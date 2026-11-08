@@ -4,7 +4,10 @@ import com.sun.net.httpserver.HttpServer;
 import io.galaxycache.common.DatasetId;
 import io.galaxycache.common.GalaxyException;
 import io.galaxycache.common.Json;
+import io.galaxycache.grid.api.ClusterMonitor;
 import io.galaxycache.grid.api.GridClient;
+import io.galaxycache.grid.api.GridSettings;
+import io.galaxycache.grid.api.NodeStatus;
 import io.galaxycache.grid.api.GridProtocol;
 import io.galaxycache.grid.api.GridRecords;
 import io.galaxycache.grid.api.GridTopology;
@@ -64,6 +67,13 @@ public final class GridNode implements AutoCloseable {
     private final Map<String, AtomicLong> counters = new ConcurrentHashMap<>();
     private final long startedAt = System.currentTimeMillis();
     private final GridClient peers;
+    private final GridSettings settings;
+    private final long startupId = new java.security.SecureRandom().nextLong();
+    private final java.util.Set<Socket> sockets = ConcurrentHashMap.newKeySet();
+    private final java.util.function.Consumer<String> onFailStop;
+    private volatile ClusterMonitor monitor;
+    private volatile String state = NodeStatus.FORMING;
+    private volatile String failReason;
     private volatile boolean running = true;
 
     /**
@@ -72,15 +82,22 @@ public final class GridNode implements AutoCloseable {
      * @param port         binary protocol port (0 = any free port, for tests)
      * @param adminPort    HTTP port for /health and /v1/stats (-1 = none)
      */
-    public GridNode(String name, GridTopology topology, Path dataDir, Map<String, Object> fileSettings, int port,
-                    int adminPort) {
+    public GridNode(String name, GridSettings settings, Path dataDir, int adminPort,
+                    java.util.function.Consumer<String> onFailStop) {
         this.name = name;
-        this.topology = topology;
-        Map<String, Object> s = new LinkedHashMap<>(fileSettings);
+        this.settings = settings;
+        this.topology = settings.topology();
+        this.onFailStop = onFailStop;
+        int port = topology.member(name).port();
+        Map<String, Object> s = new LinkedHashMap<>();
+        for (String k : List.of("pageSize", "segmentSize", "fsync", "maxReadBytes")) {
+            if (settings.raw().get(k) != null) {
+                s.put(k, settings.raw().get(k));
+            }
+        }
         s.put("path", dataDir.toString());
-        s.keySet().removeAll(List.of("nodes", "partitions", "connectionsPerNode", "timeoutMs", "adminPortOffset"));
         this.store = StorageProviders.open("file", "grid-" + name, s);
-        this.peers = new GridClient(topology, 1, 10_000);
+        this.peers = new GridClient(topology, 1, (int) Math.max(2_000, settings.heartbeatMs() * 2));
         try {
             server = new ServerSocket();
             server.setReceiveBufferSize(1024 * 1024);
@@ -95,6 +112,31 @@ public final class GridNode implements AutoCloseable {
         Thread acceptor = new Thread(this::acceptLoop, "galaxy-grid-accept-" + name);
         acceptor.setDaemon(true);
         acceptor.start();
+        List<GridTopology.Member> others = topology.members().stream().filter(m -> !m.name().equals(name)).toList();
+        monitor = new ClusterMonitor(peers, others, topology.fingerprint(), settings.heartbeatMs(),
+                settings.failAfterMs(), false, this::failStop);
+        Thread former = new Thread(() -> {
+            // wait (without limit) until every peer is up with the same topology, then serve and watch them
+            while (running && NodeStatus.FORMING.equals(state)) {
+                try {
+                    monitor.awaitFormed(10_000);
+                    if (!running) {
+                        return;
+                    }
+                    state = NodeStatus.READY;
+                    monitor.start();
+                    LOG.log(System.Logger.Level.INFO, "grid node {0} READY: all {1} nodes up", name, topology.members().size());
+                } catch (GalaxyException e) {
+                    if (e.getMessage() != null && e.getMessage().contains("different grid configuration")) {
+                        failStop(e.getMessage());
+                        return;
+                    }
+                    LOG.log(System.Logger.Level.INFO, "grid node {0} waiting for peers: {1}", name, e.getMessage());
+                }
+            }
+        }, "galaxy-grid-form-" + name);
+        former.setDaemon(true);
+        former.start();
         if (admin != null) {
             admin.setExecutor(Executors.newVirtualThreadPerTaskExecutor());
             admin.createContext("/health", ex -> http(ex, 200, "{\"status\":\"up\",\"node\":\"" + name + "\"}"));
@@ -121,12 +163,40 @@ public final class GridNode implements AutoCloseable {
         return index;
     }
 
+    public String state() {
+        return state;
+    }
+
+    /**
+     * Fail-stop: stop serving at once and close every client connection, so every process using the grid
+     * fails fast; then hand over to {@code onFailStop} (the main program exits). Idempotent.
+     */
+    public synchronized void failStop(String reason) {
+        if (NodeStatus.FAILED.equals(state) || !running) {
+            return;
+        }
+        state = NodeStatus.FAILED;
+        failReason = reason;
+        LOG.log(System.Logger.Level.ERROR, "grid node {0} FAIL-STOP: {1}", name, reason);
+        try {
+            close();
+        } catch (RuntimeException e) {
+            LOG.log(System.Logger.Level.WARNING, "error while stopping " + name, e);
+        } finally {
+            onFailStop.accept(reason);
+        }
+    }
+
     // ------------------------------------------------------------------ connections
 
     private void acceptLoop() {
         while (running) {
             try {
                 Socket s = server.accept();
+                if (!running) {
+                    s.close();
+                    break;
+                }
                 s.setTcpNoDelay(true);
                 s.setSendBufferSize(4 * 1024 * 1024);
                 Thread.ofVirtual().name("galaxy-grid-conn-" + name).start(() -> serve(s));
@@ -139,6 +209,7 @@ public final class GridNode implements AutoCloseable {
     }
 
     private void serve(Socket s) {
+        sockets.add(s);
         try (s) {
             DataInputStream in = new DataInputStream(new BufferedInputStream(s.getInputStream(), 256 * 1024));
             DataOutputStream out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream(), 1024 * 1024));
@@ -153,7 +224,11 @@ public final class GridNode implements AutoCloseable {
         } catch (EOFException | SocketException e) {
             // client went away
         } catch (IOException e) {
-            LOG.log(System.Logger.Level.WARNING, "connection error on " + name, e);
+            if (running) {
+                LOG.log(System.Logger.Level.WARNING, "connection error on " + name, e);
+            }
+        } finally {
+            sockets.remove(s);
         }
     }
 
@@ -229,8 +304,14 @@ public final class GridNode implements AutoCloseable {
         try {
             count("requests", 1);
             GridProtocol.In in = new GridProtocol.In(req.body());
+            if (req.code() != GridProtocol.PING && req.code() != GridProtocol.NODE_STATS
+                    && !NodeStatus.READY.equals(state)) {
+                r.error("grid node " + name + " is " + state + (failReason == null ? " (waiting for all nodes)" : ": " + failReason));
+                return;
+            }
             switch (req.code()) {
-                case GridProtocol.PING -> r.last(name.getBytes(StandardCharsets.UTF_8));
+                case GridProtocol.PING -> r.last(Json.writeBytes(
+                        new NodeStatus(name, startupId, state, topology.fingerprint(), failReason)));
                 case GridProtocol.ENSURE_DATASET -> {
                     DatasetMetadata md = Json.read(req.body(), DatasetMetadata.class);
                     r.last(Json.writeBytes(store.ensureDataset(md)));
@@ -342,6 +423,7 @@ public final class GridNode implements AutoCloseable {
         Map<String, Long> c = new TreeMap<>(index.counters());
         counters.forEach((k, v) -> c.put("node." + k, v.get()));
         c.put("partitionsOwned", (long) topology.partitionCounts().get(name));
+        c.put("ready", NodeStatus.READY.equals(state) ? 1L : 0L);
         List<String> namespaces = index.datasetStats().stream().map(d -> d.dataset().namespace()).distinct().toList();
         return new Messages.StatsResponse(name, startedAt, "none (grid phase 1)", namespaces, index.datasetStats(), c);
     }
@@ -398,11 +480,24 @@ public final class GridNode implements AutoCloseable {
 
     @Override
     public void close() {
+        if (!running) {
+            return;
+        }
         running = false;
+        if (monitor != null) {
+            monitor.close();
+        }
         try {
             server.close();
         } catch (IOException ignored) {
             // closing
+        }
+        for (Socket s : sockets) {
+            try {
+                s.close();
+            } catch (IOException ignored) {
+                // closing
+            }
         }
         if (admin != null) {
             admin.stop(0);

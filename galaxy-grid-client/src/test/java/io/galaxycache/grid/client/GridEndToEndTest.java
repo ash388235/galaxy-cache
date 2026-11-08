@@ -11,7 +11,9 @@ import io.galaxycache.common.domain.Indexed;
 import io.galaxycache.common.query.Filter;
 import io.galaxycache.common.query.Query;
 import io.galaxycache.config.GalaxyConfig;
+import io.galaxycache.grid.api.ClusterMonitor;
 import io.galaxycache.grid.api.GridClient;
+import io.galaxycache.grid.api.GridSettings;
 import io.galaxycache.grid.api.GridProtocol;
 import io.galaxycache.grid.api.GridRecords;
 import io.galaxycache.grid.api.GridTopology;
@@ -81,6 +83,9 @@ class GridEndToEndTest {
                     type: grid
                     path: grid
                     fsync: false
+                    heartbeatMs: 200
+                    failAfterMs: 1000
+                    startupWaitMs: 10000
                     nodes: { node-1: "localhost:%d", node-2: "localhost:%d", node-3: "localhost:%d" }
                 indexNodes:
                   grid-1: { url: "http://localhost:1" }
@@ -92,10 +97,32 @@ class GridEndToEndTest {
         Path file = tmp.resolve("galaxy.yaml");
         Files.writeString(file, yaml);
         config = GalaxyConfig.load(file);
-        var settings = config.storage("grid-1").settings();
-        topology = GridTopology.fromSettings(settings);
-        for (GridTopology.Member m : topology.members()) {
-            nodes.add(new GridNode(m.name(), topology, tmp.resolve("grid").resolve(m.name()), settings, m.port(), -1).start());
+        topology = GridTopology.fromSettings(config.storage("grid-1").settings());
+        startNodes("node-1", "node-2", "node-3");
+    }
+
+    final List<String> failStops = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    void startNodes(String... names) {
+        GridSettings settings = GridSettings.from(config.storage("grid-1").settings());
+        for (String n : names) {
+            nodes.add(new GridNode(n, settings, tmp.resolve("grid").resolve(n), -1, r -> failStops.add(n + ": " + r)).start());
+        }
+    }
+
+    void awaitNodesReady() {
+        long deadline = System.currentTimeMillis() + 10_000;
+        while (nodes.stream().anyMatch(n -> !n.state().equals("READY"))) {
+            assertTrue(System.currentTimeMillis() < deadline, "nodes not ready");
+            sleep(50);
+        }
+    }
+
+    static void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException e) {
+            throw new RuntimeException(e);
         }
     }
 
@@ -175,6 +202,7 @@ class GridEndToEndTest {
         String key = "ORD-000001";
         GridTopology.Member owner = topology.ownerOf(key);
         GridTopology.Member other = topology.members().stream().filter(m -> !m.equals(owner)).findFirst().orElseThrow();
+        awaitNodesReady();
         try (GridClient raw = new GridClient(topology, 1, 5_000)) {
             byte[] body = GridRecords.records("orders/eq/us/2026-11-08", List.of(new StoredRecord(key, 1, new byte[]{1})));
             GalaxyException e = assertThrows(GalaxyException.class, () -> raw.call(other, GridProtocol.PUT_RECORDS, body));
@@ -182,6 +210,89 @@ class GridEndToEndTest {
             raw.call(owner, GridProtocol.ENSURE_DATASET, io.galaxycache.common.Json.writeBytes(new io.galaxycache.storage.DatasetMetadata(
                     DatasetId.parse("orders/eq/us/2026-11-08"), "Order", Order.class.getName(), 1, "binary", java.time.Instant.now())));
             assertEquals(1, new GridProtocol.In(raw.call(owner, GridProtocol.PUT_RECORDS, body).get(0)).getInt());
+        }
+    }
+
+    @Test
+    void oneNodeDyingStopsTheWholeGridAndFailsClientsFast() {
+        DatasetId ds = DatasetId.of("orders", "eq", "us", "2026-11-08");
+        try (GalaxyClient client = new GalaxyClient(config)) {
+            GalaxyCache<Order> orders = client.cache(ds, Order.class);
+            List<Order> some = new ArrayList<>();
+            for (int i = 0; i < 300; i++) {
+                some.add(new Order(i));
+            }
+            orders.putAll(some);
+            assertEquals(300, orders.count(all()));
+
+            long t0 = System.currentTimeMillis();
+            nodes.get(1).close(); // node-2 dies (no goodbye to its peers)
+
+            // the client fails within about one failAfterMs, without waiting for its 2-minute request timeout
+            GalaxyException e = null;
+            while (e == null && System.currentTimeMillis() - t0 < 5_000) {
+                try {
+                    orders.get("ORD-000001");
+                    sleep(50);
+                } catch (GalaxyException ex) {
+                    e = ex;
+                }
+            }
+            assertNotNull(e, "client kept working after a node died");
+            // every later call fails at once, even for keys owned by live nodes
+            for (int i = 0; i < 20; i++) {
+                String key = String.format("ORD-%06d", i);
+                long c0 = System.currentTimeMillis();
+                assertThrows(GalaxyException.class, () -> orders.get(key));
+                assertTrue(System.currentTimeMillis() - c0 < 500);
+            }
+
+            // the surviving nodes stop themselves
+            while (failStops.size() < 2 && System.currentTimeMillis() - t0 < 5_000) {
+                sleep(50);
+            }
+            assertEquals(2, failStops.size(), "fail-stops: " + failStops);
+            assertTrue(failStops.stream().allMatch(s -> s.contains("node-2")), failStops.toString());
+            assertEquals("FAILED", nodes.get(0).state());
+            assertEquals("FAILED", nodes.get(2).state());
+            assertTrue(System.currentTimeMillis() - t0 < 5_000);
+        }
+    }
+
+    @Test
+    void clientRefusesToStartUntilEveryNodeIsUp() {
+        nodes.get(2).close();
+        nodes.remove(2);
+        // the remaining nodes stay FORMING (they never saw node-3) and refuse data
+        sleep(500);
+        assertEquals("FORMING", nodes.get(0).state());
+        System.setProperty("galaxy.grid.startupWaitMs", "1500");
+        try (GalaxyClient client = new GalaxyClient(config)) {
+            GalaxyException e = assertThrows(GalaxyException.class,
+                    () -> client.cache(DatasetId.of("orders", "eq", "us", "2026-11-08"), Order.class));
+            assertTrue(e.getMessage().contains("not ready"), e.getMessage()); // node-1/2 still FORMING: node-3 missing
+        } finally {
+            System.clearProperty("galaxy.grid.startupWaitMs");
+        }
+        startNodes("node-3");
+        awaitNodesReady();
+        try (GalaxyClient client = new GalaxyClient(config)) {
+            GalaxyCache<Order> orders = client.cache(DatasetId.of("orders", "eq", "us", "2026-11-08"), Order.class);
+            orders.put(new Order(1));
+            assertEquals(1, orders.count(all()));
+        }
+    }
+
+    @Test
+    void clientWithDifferentTopologyIsRejected() {
+        awaitNodesReady();
+        Map<String, Object> other = new java.util.LinkedHashMap<>(config.storage("grid-1").settings());
+        other.put("partitions", 512);
+        GridSettings s = GridSettings.from(other);
+        try (GridClient c = new GridClient(s.topology(), 1, 5_000)) {
+            ClusterMonitor m = new ClusterMonitor(c, s.topology().members(), s.topology().fingerprint(), 200, 1000, true, r -> { });
+            GalaxyException e = assertThrows(GalaxyException.class, () -> m.awaitFormed(2_000));
+            assertTrue(e.getMessage().contains("different grid configuration"), e.getMessage());
         }
     }
 

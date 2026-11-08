@@ -23,6 +23,13 @@ storages:
     nodes: { node-1: "localhost:7101", node-2: "localhost:7102", node-3: "localhost:7103" }
     partitions: 1024
     connectionsPerNode: 4
+    # fail-stop: if any node is unreachable for failAfterMs, restarts or fails, every node stops itself and
+    # every client call fails at once. onFailure: exit makes client processes exit (status 75) so they can be
+    # restarted with the grid. The dashboard always uses 'throw'.
+    heartbeatMs: 1000
+    failAfterMs: 5000
+    startupWaitMs: 60000
+    onFailure: exit
   # archive-s3: { type: s3, bucket: my-bucket, prefix: galaxy/ }   # later
 
 # Index pods. A pod can serve many namespaces; a namespace uses exactly one pod.

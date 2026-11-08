@@ -139,6 +139,18 @@ public final class GridTopology {
         return out;
     }
 
+    /**
+     * Identifies this exact topology (members, addresses, partition count, assignment scheme). Nodes and clients
+     * refuse to work together unless their fingerprints match, so a stale config can never misroute keys.
+     */
+    public String fingerprint() {
+        StringBuilder sb = new StringBuilder("v1|").append(partitions).append('|');
+        members.forEach(m -> sb.append(m.name()).append('@').append(m.host()).append(':').append(m.port()).append(';'));
+        java.util.zip.CRC32 crc = new java.util.zip.CRC32();
+        crc.update(sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        return Long.toHexString(crc.getValue()) + "-" + members.size() + "n-" + partitions + "p";
+    }
+
     private static long mix64(long z) {
         z = (z ^ (z >>> 33)) * 0xff51afd7ed558ccdL;
         z = (z ^ (z >>> 33)) * 0xc4ceb9fe1a85ec53L;

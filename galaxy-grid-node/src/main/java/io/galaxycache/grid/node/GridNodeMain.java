@@ -2,6 +2,7 @@ package io.galaxycache.grid.node;
 
 import io.galaxycache.common.GalaxyException;
 import io.galaxycache.config.GalaxyConfig;
+import io.galaxycache.grid.api.GridSettings;
 import io.galaxycache.grid.api.GridTopology;
 
 import java.nio.file.Path;
@@ -44,19 +45,29 @@ public final class GridNodeMain {
     }
 
     public static GridNode start(GalaxyConfig config, String grid, String node) {
+        return start(config, grid, node, reason -> {
+            // fail-stop: exit so the supervisor/operator sees it; give the log a moment to flush
+            System.err.println("grid node " + node + " stopped: " + reason);
+            Thread t = new Thread(() -> System.exit(2));
+            t.start();
+        });
+    }
+
+    public static GridNode start(GalaxyConfig config, String grid, String node,
+                                 java.util.function.Consumer<String> onFailStop) {
         GalaxyConfig.StorageConfig sc = config.storage(grid);
         if (!"grid".equals(sc.type())) {
             throw new GalaxyException("storage '" + grid + "' is of type " + sc.type() + ", not grid");
         }
         Map<String, Object> s = sc.settings();
-        GridTopology topo = GridTopology.fromSettings(s);
-        GridTopology.Member me = topo.member(node);
+        GridSettings settings = GridSettings.from(s);
+        GridTopology.Member me = settings.topology().member(node);
         Object path = s.get("path");
         if (path == null) {
             throw new GalaxyException("grid storage '" + grid + "' needs a 'path' for node data");
         }
-        return new GridNode(node, topo, Path.of(path.toString()).resolve(node), s, me.port(),
-                me.port() + adminOffset(s)).start();
+        return new GridNode(node, settings, Path.of(path.toString()).resolve(node), me.port() + adminOffset(s),
+                onFailStop).start();
     }
 
     private static int adminOffset(Map<String, Object> s) {
