@@ -143,4 +143,152 @@ class FileDataStoreTest {
             assertEquals(List.of(DS), s.listDatasets(null));
         }
     }
-}
+
+    // ------------------------------------------------------------------ compaction
+
+    private static final FileStoreOptions EXCLUSIVE = new FileStoreOptions(4096, 4096 * 16, false, 64 * 1024, true);
+
+    private FileDataStore exclusiveStore(Path dir) {
+        FileDataStore s = new FileDataStore("t", dir, EXCLUSIVE);
+        s.ensureDataset(new DatasetMetadata(DS, "Trade", "x.Trade", 1, "json", Instant.now()));
+        return s;
+    }
+
+    /** 3,000 records, half of them updated, 100 deleted; returns the expected live content. */
+    private static Map<String, String> loadWithGarbage(FileDataStore s) {
+        Map<String, String> expected = new java.util.TreeMap<>();
+        List<StoredRecord> batch = new ArrayList<>();
+        for (int i = 0; i < 3_000; i++) {
+            String v = "v1-" + i + "-" + "x".repeat(i % 200);
+            batch.add(rec("id-" + i, v));
+            expected.put("id-" + i, v);
+        }
+        s.putAll(DS, batch);
+        batch.clear();
+        for (int i = 0; i < 1_500; i++) {
+            String v = "v2-" + i + "-" + "y".repeat(i % 300);
+            batch.add(rec("id-" + i, v));
+            expected.put("id-" + i, v);
+        }
+        s.putAll(DS, batch);
+        List<String> gone = new ArrayList<>();
+        for (int i = 1_000; i < 1_100; i++) {
+            gone.add("id-" + i);
+            expected.remove("id-" + i);
+        }
+        s.deleteAll(DS, gone);
+        return expected;
+    }
+
+    private static void assertContent(FileDataStore s, Map<String, String> expected) {
+        List<String> ids = new ArrayList<>(expected.keySet());
+        ids.add("id-1050"); // deleted before compaction: must stay deleted
+        Map<String, StoredRecord> got = s.getAll(DS, ids);
+        assertEquals(expected.size(), got.size());
+        expected.forEach((k, v) -> assertEquals(v, str(got.get(k)), k));
+        assertEquals(expected.size(), s.stats(DS).liveRecords());
+    }
+
+    @Test
+    void compactionReclaimsSpaceAndKeepsEveryLiveRecord() {
+        Map<String, String> expected;
+        try (FileDataStore s = exclusiveStore(tmp)) {
+            expected = loadWithGarbage(s);
+            long before = s.stats(DS).bytesOnDisk();
+            long reclaimed = s.compact(DS);
+            assertTrue(reclaimed > 0, "reclaimed " + reclaimed);
+            assertEquals(before - reclaimed, s.stats(DS).bytesOnDisk());
+            assertContent(s, expected);
+
+            s.put(DS, rec("after", "written after compaction")); // the log keeps working
+            expected.put("after", "written after compaction");
+            assertContent(s, expected);
+        }
+        try (FileDataStore s = new FileDataStore("t", tmp, EXCLUSIVE)) { // and survives a reopen
+            assertContent(s, expected);
+            assertTrue(s.compact(DS) >= 0); // a second compaction is fine
+            assertContent(s, expected);
+        }
+    }
+
+    @Test
+    void aCrashAtAnyPointOfCompactionLosesNothing() {
+        for (PagedDataset.CrashPoint p : List.of(PagedDataset.CrashPoint.AFTER_PARTIAL_COPY,
+                PagedDataset.CrashPoint.AFTER_COPY_BEFORE_BASE, PagedDataset.CrashPoint.AFTER_BASE_BEFORE_DELETE)) {
+            Path dir = tmp.resolve(p.name());
+            Map<String, String> expected;
+            try (FileDataStore s = exclusiveStore(dir)) {
+                expected = loadWithGarbage(s);
+                assertThrows(io.galaxycache.common.GalaxyException.class, () -> s.compact(DS, p), p.name());
+            }
+            try (FileDataStore s = new FileDataStore("t", dir, EXCLUSIVE)) {
+                assertContent(s, expected);
+                s.put(DS, rec("post-crash", "ok"));
+                expected.put("post-crash", "ok");
+                s.compact(DS);
+                assertContent(s, expected);
+            }
+            try (FileDataStore s = new FileDataStore("t", dir, EXCLUSIVE)) {
+                assertContent(s, expected);
+            }
+        }
+    }
+
+    @Test
+    void compactingAnEmptyDatasetWorks() {
+        try (FileDataStore s = exclusiveStore(tmp)) {
+            s.put(DS, rec("a", "one"));
+            s.delete(DS, "a");
+            s.compact(DS);
+            assertEquals(0, s.stats(DS).liveRecords());
+            assertEquals(0, s.stats(DS).bytesOnDisk());
+            s.put(DS, rec("b", "two"));
+            assertEquals("two", str(s.get(DS, "b").orElseThrow()));
+        }
+        try (FileDataStore s = new FileDataStore("t", tmp, EXCLUSIVE)) {
+            assertEquals("two", str(s.get(DS, "b").orElseThrow()));
+            assertEquals(1, s.stats(DS).liveRecords());
+        }
+    }
+
+    @Test
+    void sharedStoresRefuseCompaction() {
+        try (FileDataStore s = store(FileStoreOptions.defaults())) {
+            s.put(DS, rec("a", "one"));
+            assertThrows(io.galaxycache.common.GalaxyException.class, () -> s.compact(DS));
+        }
+    }
+
+    @Test
+    void readersKeepWorkingDuringCompaction() throws Exception {
+        try (FileDataStore s = exclusiveStore(tmp)) {
+            Map<String, String> expected = loadWithGarbage(s);
+            List<String> ids = new ArrayList<>(expected.keySet());
+            java.util.concurrent.atomic.AtomicBoolean stop = new java.util.concurrent.atomic.AtomicBoolean();
+            ExecutorService pool = Executors.newFixedThreadPool(4);
+            List<Future<Integer>> readers = new ArrayList<>();
+            for (int t = 0; t < 4; t++) {
+                int seed = t;
+                readers.add(pool.submit(() -> {
+                    Random r = new Random(seed);
+                    int n = 0;
+                    while (!stop.get()) {
+                        String id = ids.get(r.nextInt(ids.size()));
+                        assertEquals(expected.get(id), str(s.get(DS, id).orElseThrow()), id);
+                        n++;
+                    }
+                    return n;
+                }));
+            }
+            Thread.sleep(50);
+            for (int c = 0; c < 5; c++) {
+                s.compact(DS);
+            }
+            stop.set(true);
+            for (Future<Integer> f : readers) {
+                assertTrue(f.get() > 0);
+            }
+            pool.shutdown();
+            assertContent(s, expected);
+        }
+    }}

@@ -47,6 +47,8 @@ public final class GridProtocol {
     public static final byte NODE_STATS = 15;
     /** Node moves every record (and index document) it does not own to the owner; answers [moved: long]. */
     public static final byte REBALANCE = 16;
+    /** Node rewrites its datasets without old versions and deleted records; answers [bytes reclaimed: long]. */
+    public static final byte COMPACT = 17;
 
     // ---- response status
     public static final byte PART = 0;

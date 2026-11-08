@@ -129,6 +129,11 @@ traffic. Nodes listen only on their own host from `nodes` unless `bindAddress` i
 `misplacedKeys` in their stats), then run
 `java -cp galaxy-examples.jar io.galaxycache.grid.client.GridRebalance --config galaxy.yaml --grid grid-1`.
 Each node moves the records and index entries it no longer owns straight to their owner.
+
+**Reclaiming disk.** Updates, deletes and rebalancing leave old versions on disk. With no clients writing, run
+`java -cp galaxy-examples.jar io.galaxycache.grid.client.GridCompact --config galaxy.yaml --grid grid-1`. Each node
+rewrites its live records into new segments and removes the old ones, so it needs free disk about the size of its
+live data. Reads keep working; writes wait. A crash at any point loses nothing.
 ## v1 limits
 
-Local file storage only; no compaction yet (updates, deletes and rebalancing append, old versions stay on disk); Postgres persistence is an untested stub; all clients must use the same domain version; a failed index call after a successful storage write needs `reindex()` (grid nodes report such records as `unindexedRecords` at startup). Grid: no backups or failover by design (fail-stop), no live rebalancing, no compaction.
+Local file storage only; shared file stores have no compaction (updates and deletes append, old versions stay on disk); Postgres persistence is an untested stub; all clients must use the same domain version; a failed index call after a successful storage write needs `reindex()` (grid nodes report such records as `unindexedRecords` at startup). Grid: no backups or failover by design (fail-stop), no live rebalancing, compaction is a manual job (`GridCompact`).

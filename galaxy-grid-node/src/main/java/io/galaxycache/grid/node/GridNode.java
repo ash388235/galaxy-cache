@@ -185,6 +185,8 @@ public final class GridNode implements AutoCloseable {
         return state;
     }
 
+    /** One maintenance job at a time. Separate from the node's monitor, so fail-stop never waits for a long job. */
+    private final ReentrantLock maintenance = new ReentrantLock();
     private final Map<String, Long> unindexed = new ConcurrentHashMap<>();
     /** Index documents of keys another node owns (after a topology change); REBALANCE moves them. */
     private final Map<String, Long> misplaced = new ConcurrentHashMap<>();
@@ -240,7 +242,34 @@ public final class GridNode implements AutoCloseable {
      * its index document, then deletes it here. Batches of about 8 MB per owner; a batch is deleted locally only
      * after the owner acknowledged both the records and the index documents. Safe to run again.
      */
-    synchronized long rebalance() {
+    long rebalance() {
+        maintenance.lock();
+        try {
+            return rebalanceLocked();
+        } finally {
+            maintenance.unlock();
+        }
+    }
+
+    /** Rewrites this node's records and index documents without old versions and deleted entries. */
+    long compact() {
+        maintenance.lock();
+        try {
+            long reclaimed = 0;
+            for (DatasetId ds : store.listDatasets(null)) {
+                reclaimed += store.compact(ds);
+            }
+            for (DatasetId ds : indexStore.listDatasets(null)) {
+                reclaimed += indexStore.compact(ds);
+            }
+            LOG.log(System.Logger.Level.INFO, "grid node {0} compaction reclaimed {1} bytes", name, reclaimed);
+            return reclaimed;
+        } finally {
+            maintenance.unlock();
+        }
+    }
+
+    private long rebalanceLocked() {
         long moved = 0;
         for (DatasetId ds : store.listDatasets(null)) {
             DatasetMetadata md = store.metadata(ds).orElseThrow();
@@ -580,6 +609,7 @@ public final class GridNode implements AutoCloseable {
                 }
                 case GridProtocol.NODE_STATS -> r.last(Json.writeBytes(nodeStats()));
                 case GridProtocol.REBALANCE -> r.last(new GridProtocol.Out(8).putLong(rebalance()).toBytes());
+                case GridProtocol.COMPACT -> r.last(new GridProtocol.Out(8).putLong(compact()).toBytes());
                 default -> r.error("unknown op " + req.code());
             }
         } catch (RuntimeException e) {

@@ -183,6 +183,16 @@ public final class FileDataStore implements DataStore {
     }
 
     @Override
+    public long compact(DatasetId ds) {
+        return dataset(ds).compact(PagedDataset.CrashPoint.NONE);
+    }
+
+    /** Test hook: compaction that stops as if the process died at {@code crash}. */
+    long compact(DatasetId ds, PagedDataset.CrashPoint crash) {
+        return dataset(ds).compact(crash);
+    }
+
+    @Override
     public synchronized void dropDataset(DatasetId ds) {
         PagedDataset d = open.remove(ds);
         if (d != null) {

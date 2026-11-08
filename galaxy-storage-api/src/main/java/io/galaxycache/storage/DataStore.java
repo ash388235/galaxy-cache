@@ -47,6 +47,14 @@ public interface DataStore extends AutoCloseable {
 
     void dropDataset(DatasetId dataset);
 
+    /**
+     * Rewrites a dataset without the space held by old versions and deleted records; returns the bytes reclaimed.
+     * Writers wait until it finishes. Not every store supports it.
+     */
+    default long compact(DatasetId dataset) {
+        throw new UnsupportedOperationException(name() + " does not support compaction");
+    }
+
     @Override
     void close();
 }

@@ -458,6 +458,37 @@ class GridEndToEndTest {
     }
 
     @Test
+    void compactionReclaimsDiskAndKeepsDataAcrossRestart() {
+        DatasetId ds = DatasetId.of("orders", "eq", "us", "2026-11-08");
+        List<Order> all = new ArrayList<>();
+        for (int i = 0; i < 2_000; i++) {
+            all.add(new Order(i));
+        }
+        long before;
+        try (GalaxyClient client = new GalaxyClient(config)) {
+            GalaxyCache<Order> orders = client.cache(ds, Order.class);
+            orders.putAll(all);
+            orders.putAll(all); // every record now has an old version on disk
+            orders.deleteByKey(all.get(0));
+            before = orders.stats().bytesOnDisk();
+        }
+        Map<String, Long> reclaimed = GridCompact.run(config.storage("grid-1").settings());
+        assertTrue(reclaimed.values().stream().mapToLong(Long::longValue).sum() > 0, reclaimed.toString());
+        nodes.forEach(GridNode::close);
+        nodes.clear();
+        startNodes("node-1", "node-2", "node-3");
+        awaitNodesReady();
+        try (GalaxyClient client = new GalaxyClient(config)) {
+            GalaxyCache<Order> orders = client.cache(ds, Order.class);
+            assertTrue(orders.stats().bytesOnDisk() < before, "disk did not shrink");
+            assertEquals(1_999, orders.stats().liveRecords());
+            assertEquals(1_999, orders.count(all()));
+            assertTrue(orders.get("ORD-000000").isEmpty());
+            assertEquals(1500, orders.get("ORD-001500").orElseThrow().quantity);
+        }
+    }
+
+    @Test
     void mergeKeepsGlobalOrderAndPaging() {
         List<List<String>> lists = List.of(List.of("a", "d", "g"), List.of("b", "e"), List.of("c", "f", "h"));
         assertEquals(List.of("a", "b", "c", "d", "e", "f", "g", "h"), GridIndexClient.mergeSorted(lists, 0, Query.NO_LIMIT));

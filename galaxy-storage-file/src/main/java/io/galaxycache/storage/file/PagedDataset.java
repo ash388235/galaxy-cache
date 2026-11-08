@@ -37,6 +37,8 @@ final class PagedDataset implements AutoCloseable {
 
     private static final String COMMIT_FILE = "_commit";
     private static final String LOCK_FILE = ".lock";
+    /** First live segment number; absent means 1. Advanced atomically by compaction. */
+    private static final String BASE_FILE = "_base";
     private static final int SCAN_CHUNK = 1024 * 1024;
 
     /** Where the latest version of a record lives. */
@@ -57,7 +59,10 @@ final class PagedDataset implements AutoCloseable {
     /** OS file locks are per JVM, so threads and store instances in one JVM also share an in-process lock. */
     private static final Map<Path, ReentrantLock> JVM_LOCKS = new ConcurrentHashMap<>();
     private final ReentrantLock writeLock;
-
+    /** Readers hold the read side while using segment files; compaction takes the write side to delete old ones. */
+    private final java.util.concurrent.locks.ReentrantReadWriteLock segmentsLock =
+            new java.util.concurrent.locks.ReentrantReadWriteLock();
+    private volatile int baseSegment = 1;
     private volatile int scannedSegment = 1;
     private volatile long scannedLength = 0;
     private FileChannel commitChannel;
@@ -74,6 +79,9 @@ final class PagedDataset implements AutoCloseable {
             Files.createDirectories(dir);
             commitChannel = FileChannel.open(dir.resolve(COMMIT_FILE),
                     StandardOpenOption.CREATE, StandardOpenOption.READ, StandardOpenOption.WRITE);
+            baseSegment = readBase();
+            scannedSegment = baseSegment;
+            deleteSegmentsBelow(baseSegment); // left behind if a compaction died after moving the base
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         }
@@ -147,6 +155,9 @@ final class PagedDataset implements AutoCloseable {
                 // roll to a new segment when this record would overflow the current one
                 if (pos > 0 && pos + len > opts.segmentSize()) {
                     flush(ch, out, bufStart);
+                    if (opts.fsync()) {
+                        ch.force(false); // the commit below only forces the last segment
+                    }
                     seg++;
                     pos = 0;
                     bufStart = 0;
@@ -251,6 +262,144 @@ final class PagedDataset implements AutoCloseable {
         throw new GalaxyException("Commit marker of dataset " + id + " is unreadable");
     }
 
+    // ------------------------------------------------------------------ compaction
+
+    /** Test hook: where to pretend the process died during {@link #compact(CrashPoint)}. */
+    enum CrashPoint { NONE, AFTER_PARTIAL_COPY, AFTER_COPY_BEFORE_BASE, AFTER_BASE_BEFORE_DELETE }
+
+    /**
+     * Rewrites the live records into new segments and removes the old ones; returns the bytes reclaimed.
+     *
+     * <p>Crash safe at every step, because the copy is ordinary log content: live records are appended and
+     * committed after everything that exists, so replaying old segments and then the copies yields the same state.
+     * Only once all copies are committed does the atomic {@code _base} file move the start of the log past the old
+     * segments; those are then deleted (and deleted again at next open if the process died first).
+     *
+     * <p>Writers wait for the whole compaction; readers keep working. Only for {@code exclusive} stores: another
+     * process could not know the old segments are going away.
+     */
+    long compact(CrashPoint crash) {
+        if (!opts.exclusive()) {
+            throw new GalaxyException("compaction needs an exclusive store (dataset " + id + " may be shared)");
+        }
+        return withWriteLock(() -> {
+            try {
+                return compactLocked(crash);
+            } catch (IOException e) {
+                throw new UncheckedIOException("Compaction failed on dataset " + id, e);
+            }
+        });
+    }
+
+    private long compactLocked(CrashPoint crash) throws IOException {
+        long before = bytesOnDisk();
+        long live = directory.values().stream().mapToLong(Loc::length).sum();
+        long usable = Files.getFileStore(dir).getUsableSpace();
+        if (usable < live + opts.segmentSize()) {
+            throw new GalaxyException("Not enough disk to compact " + id + ": need " + live + " bytes free, have " + usable);
+        }
+        int oldBase = baseSegment;
+        int oldLast = scannedSegment;
+        if (Files.exists(segmentPath(oldLast))) {
+            FileChannel last = tail(oldLast);
+            if (last.size() > scannedLength) {
+                last.truncate(scannedLength); // bytes past the commit must not be replayed as part of this segment
+            }
+            last.force(true);
+        }
+        int newBase = oldLast + 1;
+        List<Map.Entry<String, Loc>> all = new ArrayList<>(directory.entrySet());
+        all.sort(Comparator.<Map.Entry<String, Loc>>comparingInt(e -> e.getValue().segment())
+                .thenComparingLong(e -> e.getValue().offset()));
+        scannedSegment = newBase;
+        scannedLength = 0;
+        int from = 0;
+        while (from < all.size()) {
+            int to = from;
+            long bytes = 0;
+            while (to < all.size() && (to == from || bytes + all.get(to).getValue().length() <= 8L * 1024 * 1024)) {
+                bytes += all.get(to).getValue().length();
+                to++;
+            }
+            List<String> ids = all.subList(from, to).stream().map(Map.Entry::getKey).toList();
+            Map<String, StoredRecord> got = getAll(ids);
+            if (got.size() != ids.size()) {
+                throw new GalaxyException("Compaction of " + id + " could read only " + got.size() + " of " + ids.size() + " records");
+            }
+            List<byte[]> encoded = new ArrayList<>(ids.size());
+            for (String i : ids) {
+                StoredRecord r = got.get(i);
+                encoded.add(RecordFormat.encode(RecordFormat.PUT, i, r.schemaVersion(), r.payload()));
+            }
+            appendLocked(ids, encoded, RecordFormat.PUT);
+            from = to;
+            if (crash == CrashPoint.AFTER_PARTIAL_COPY && from >= all.size() / 2) {
+                throw new GalaxyException("simulated crash: partial copy");
+            }
+        }
+        if (all.isEmpty()) {
+            synchronized (refreshLock) {
+                writeCommit(new Commit(newBase, 0));
+            }
+        }
+        if (crash == CrashPoint.AFTER_COPY_BEFORE_BASE) {
+            throw new GalaxyException("simulated crash: before base");
+        }
+        segmentsLock.writeLock().lock();
+        try {
+            writeBase(newBase);
+            baseSegment = newBase;
+            if (crash == CrashPoint.AFTER_BASE_BEFORE_DELETE) {
+                throw new GalaxyException("simulated crash: before delete");
+            }
+            if (tailChannelSegment >= 0 && tailChannelSegment < newBase) {
+                tailChannel.close();
+                tailChannel = null;
+                tailChannelSegment = -1;
+            }
+            for (int s = oldBase; s < newBase; s++) {
+                FileChannel c = readChannels.remove(s);
+                if (c != null) {
+                    c.close();
+                }
+                Files.deleteIfExists(segmentPath(s));
+            }
+        } finally {
+            segmentsLock.writeLock().unlock();
+        }
+        return before - bytesOnDisk();
+    }
+
+    private int readBase() throws IOException {
+        Path f = dir.resolve(BASE_FILE);
+        return Files.exists(f) ? Integer.parseInt(Files.readString(f).trim()) : 1;
+    }
+
+    private void writeBase(int base) throws IOException {
+        Path tmp = dir.resolve(BASE_FILE + ".tmp");
+        try (FileChannel c = FileChannel.open(tmp, StandardOpenOption.CREATE, StandardOpenOption.WRITE,
+                StandardOpenOption.TRUNCATE_EXISTING)) {
+            c.write(ByteBuffer.wrap(Integer.toString(base).getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+            c.force(true);
+        }
+        Files.move(tmp, dir.resolve(BASE_FILE), java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+    }
+
+    private void deleteSegmentsBelow(int base) throws IOException {
+        if (base <= 1) {
+            return;
+        }
+        try (java.util.stream.Stream<Path> files = Files.list(dir)) {
+            for (Path p : files.filter(f -> f.getFileName().toString().matches("seg-\\d+\\.gdat")).toList()) {
+                String n = p.getFileName().toString();
+                if (Integer.parseInt(n.substring(4, n.length() - 5)) < base) {
+                    Files.deleteIfExists(p);
+                }
+            }
+        }
+    }
+
     // ------------------------------------------------------------------ catch-up
 
     /** Reads skip the commit check when this process is the only writer (it already knows every commit). */
@@ -272,7 +421,8 @@ final class PagedDataset implements AutoCloseable {
                     // the log went backwards: the dataset was dropped and recreated elsewhere
                     directory.clear();
                     closeReadChannels();
-                    scannedSegment = 1;
+                    baseSegment = readBase();
+                    scannedSegment = baseSegment;
                     scannedLength = 0;
                 }
                 for (int s = scannedSegment; s <= c.segment(); s++) {
@@ -356,22 +506,27 @@ final class PagedDataset implements AutoCloseable {
     /** Bulk read: groups ids by segment, sorts by offset and merges nearby records into large reads. */
     Map<String, StoredRecord> getAll(Collection<String> ids) {
         refreshUnlessExclusive();
-        Map<Integer, List<Map.Entry<String, Loc>>> bySegment = new HashMap<>();
-        for (String i : ids) {
-            Loc loc = directory.get(i);
-            if (loc != null) {
-                bySegment.computeIfAbsent(loc.segment(), k -> new ArrayList<>()).add(Map.entry(i, loc));
-            }
-        }
-        Map<String, StoredRecord> out = new HashMap<>(ids.size() * 2);
+        segmentsLock.readLock().lock();
         try {
-            for (Map.Entry<Integer, List<Map.Entry<String, Loc>>> e : bySegment.entrySet()) {
-                readSegment(e.getKey(), e.getValue(), out);
+            Map<Integer, List<Map.Entry<String, Loc>>> bySegment = new HashMap<>();
+            for (String i : ids) {
+                Loc loc = directory.get(i);
+                if (loc != null) {
+                    bySegment.computeIfAbsent(loc.segment(), k -> new ArrayList<>()).add(Map.entry(i, loc));
+                }
             }
-        } catch (IOException ex) {
-            throw new UncheckedIOException("Read failed on dataset " + id, ex);
+            Map<String, StoredRecord> out = new HashMap<>(ids.size() * 2);
+            try {
+                for (Map.Entry<Integer, List<Map.Entry<String, Loc>>> e : bySegment.entrySet()) {
+                    readSegment(e.getKey(), e.getValue(), out);
+                }
+            } catch (IOException ex) {
+                throw new UncheckedIOException("Read failed on dataset " + id, ex);
+            }
+            return out;
+        } finally {
+            segmentsLock.readLock().unlock();
         }
-        return out;
     }
 
     private void readSegment(int seg, List<Map.Entry<String, Loc>> entries, Map<String, StoredRecord> out)
@@ -438,7 +593,7 @@ final class PagedDataset implements AutoCloseable {
 
     long bytesOnDisk() {
         long total = 0;
-        for (int s = 1; Files.exists(segmentPath(s)); s++) {
+        for (int s = baseSegment; Files.exists(segmentPath(s)); s++) {
             try {
                 total += Files.size(segmentPath(s));
             } catch (IOException ignored) {
@@ -450,7 +605,7 @@ final class PagedDataset implements AutoCloseable {
 
     int segmentCount() {
         int n = 0;
-        while (Files.exists(segmentPath(n + 1))) {
+        while (Files.exists(segmentPath(baseSegment + n))) {
             n++;
         }
         return n;
