@@ -1,0 +1,5 @@
+target/
+galaxy-data/
+*.iml
+.idea/
+.vscode/

@@ -1,0 +1,3 @@
+io.galaxycache.index.server.persistence.NoopIndexPersistence$Provider
+io.galaxycache.index.server.persistence.InMemoryIndexPersistence$Provider
+io.galaxycache.index.server.persistence.PostgresIndexPersistence$Provider

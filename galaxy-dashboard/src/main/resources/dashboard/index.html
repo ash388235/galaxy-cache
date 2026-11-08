@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Galaxy Cache Dashboard</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1c2330; --muted: #5d6778; --line: #e3e6eb;
+    --accent: #3b6fd8; --accent-soft: rgba(59,111,216,.14); --good: #1f8a4c; --bad: #c2412d; --p95: #9aa9c4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #12151b; --panel: #1a1f27; --ink: #e6e9ef; --muted: #98a2b3; --line: #2a313c;
+      --accent: #6d9bff; --accent-soft: rgba(109,155,255,.18); --good: #4cc27f; --bad: #ff7a63; --p95: #4a5874; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 12px; padding: 18px 24px 4px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  main { padding: 12px 24px 32px; display: grid; gap: 16px; max-width: 1400px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile, section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+  .tile { padding: 12px 14px; }
+  .tile .label { color: var(--muted); font-size: 12px; }
+  .tile .value { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  section { padding: 14px 16px; overflow: hidden; }
+  section h2 { font-size: 14px; margin: 0 0 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 16px; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.num, th.num { text-align: right; }
+  td.filter { white-space: normal; max-width: 420px; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; }
+  .up { background: rgba(31,138,76,.15); color: var(--good); }
+  .down { background: rgba(194,65,45,.15); color: var(--bad); }
+  .err { color: var(--bad); }
+  select { background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+  .legend { color: var(--muted); font-size: 12px; font-weight: 400; display: flex; gap: 12px; align-items: center; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 4px; vertical-align: -1px; }
+  .empty { color: var(--muted); padding: 8px 0; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .scopebar { display: flex; align-items: center; gap: 8px; margin-left: auto; font-size: 13px; }
+  .scopebar select { min-width: 280px; max-width: 70vw; padding: 5px 8px; }
+  .scopechip { display: inline-block; padding: 2px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12px; }
+  @media (max-width: 600px) { header, main { padding-left: 16px; padding-right: 16px; } .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Galaxy Cache</h1>
+  <span class="meta" id="cluster"></span>
+  <span class="meta" id="updated"></span>
+  <label class="scopebar">View
+    <select id="scope" aria-label="Limit the dashboard to a namespace or cache"><option value="">Whole cluster</option></select>
+  </label>
+</header>
+<main>
+  <div class="tiles" id="tiles"></div>
+
+  <div class="grid2">
+    <section>
+      <h2>Latency by operation
+        <span class="legend"><span><span class="sw" style="background:var(--accent)"></span>average</span>
+        <span><span class="sw" style="background:var(--p95)"></span>p95</span></span></h2>
+      <div id="latency"></div>
+    </section>
+    <section>
+      <h2>Index pods</h2>
+      <div class="scroll" id="nodes"></div>
+    </section>
+  </div>
+
+  <section>
+    <h2>Operations <span class="legend" id="scopeLabel"></span></h2>
+    <div class="scroll" id="ops"></div>
+  </section>
+
+  <section>
+    <h2>Recent operations
+      <select id="opFilter"><option value="">all operations</option></select></h2>
+    <div class="scroll" id="queries"></div>
+  </section>
+
+  <div class="grid2">
+    <section><h2>Namespaces</h2><div class="scroll" id="namespaces"></div></section>
+    <section><h2>Slowest queries</h2><div class="scroll" id="slowest"></div></section>
+  </div>
+
+  <section><h2>Datasets</h2><div class="scroll" id="datasets"></div></section>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const num = n => n == null || n < 0 ? '–' : Number(n).toLocaleString();
+const ms = n => n == null ? '–' : Number(n).toFixed(n < 10 ? 2 : 1);
+const bytes = b => { if (!b) return '0 B'; const u = ['B','KiB','MiB','GiB','TiB']; let i = 0; while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; } return b.toFixed(i ? 1 : 0) + ' ' + u[i]; };
+const time = ts => ts ? new Date(ts).toLocaleTimeString() : '';
+const get = p => fetch(p).then(r => r.json());
+
+// scope: whole cluster, one namespace (ns:<name>) or one cache (ds:<key>); kept in the page URL
+function scopeFromUrl() {
+  const u = new URLSearchParams(location.search);
+  return u.get('dataset') ? 'ds:' + u.get('dataset') : u.get('namespace') ? 'ns:' + u.get('namespace') : '';
+}
+function scopeQuery() {
+  const v = $('scope').value;
+  return v.startsWith('ds:') ? 'dataset=' + encodeURIComponent(v.slice(3))
+       : v.startsWith('ns:') ? 'namespace=' + encodeURIComponent(v.slice(3)) : '';
+}
+const api = (path, extra) => get(path + '?' + [scopeQuery(), extra].filter(Boolean).join('&'));
+
+async function loadScopes() {
+  const sel = $('scope'), want = sel.options.length > 1 ? sel.value : scopeFromUrl();
+  const scopes = await get('/api/scopes');
+  sel.innerHTML = '<option value="">Whole cluster</option>' + scopes.map(s =>
+    `<optgroup label="namespace ${esc(s.namespace)}">
+       <option value="ns:${esc(s.namespace)}">${esc(s.namespace)} · all caches (${s.datasets.length})</option>
+       ${s.datasets.map(d => `<option value="ds:${esc(d)}">${esc(d)}</option>`).join('')}
+     </optgroup>`).join('');
+  sel.value = [...sel.options].some(o => o.value === want) ? want : '';
+}
+
+function table(cols, rows, empty) {
+  if (!rows.length) return `<div class="empty">${empty}</div>`;
+  return `<table><thead><tr>${cols.map(c => `<th class="${c.num ? 'num' : ''}">${c.h}</th>`).join('')}</tr></thead><tbody>` +
+    rows.map(r => `<tr>${cols.map(c => `<td class="${c.num ? 'num' : ''} ${c.cls || ''}">${c.f(r)}</td>`).join('')}</tr>`).join('') +
+    '</tbody></table>';
+}
+
+function latencyChart(ops) {
+  if (!ops.length) return '<div class="empty">No operations logged yet.</div>';
+  const max = Math.max(...ops.map(o => o.p95Ms), 0.01), rowH = 34, w = 640, left = 96, right = 150, bw = w - left - right;
+  const rows = ops.map((o, i) => {
+    const y = i * rowH + 6, p = o.p95Ms / max * bw, a = o.avgMs / max * bw;
+    return `<text x="${left - 8}" y="${y + 15}" text-anchor="end" font-size="12" fill="var(--ink)">${esc(o.op)}</text>
+      <rect x="${left}" y="${y + 2}" width="${Math.max(p, 1)}" height="18" rx="3" fill="var(--p95)"/>
+      <rect x="${left}" y="${y + 6}" width="${Math.max(a, 1)}" height="10" rx="2" fill="var(--accent)"/>
+      <text x="${left + Math.max(p, a) + 6}" y="${y + 15}" font-size="11.5" fill="var(--muted)">${ms(o.avgMs)} / ${ms(o.p95Ms)} ms · ${num(o.count)}</text>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${w} ${ops.length * rowH + 8}" width="100%" role="img" aria-label="Latency by operation">${rows}</svg>`;
+}
+
+async function refresh() {
+  try {
+    const op = $('opFilter').value;
+    const [ov, stats, queries, ns, ds, nodes] = await Promise.all([
+      api('/api/overview'), api('/api/query-stats'), api('/api/queries', 'limit=50&op=' + encodeURIComponent(op)),
+      api('/api/namespaces'), api('/api/datasets'), api('/api/index-nodes')]);
+    const scopeText = ov.scopeDataset ? 'cache ' + ov.scopeDataset : ov.scopeNamespace ? 'namespace ' + ov.scopeNamespace : 'whole cluster';
+    $('scopeLabel').innerHTML = `<span class="scopechip">${esc(scopeText)}</span>`;
+    document.title = 'Galaxy Cache · ' + scopeText;
+
+    $('cluster').textContent = 'cluster ' + ov.cluster;
+    $('updated').textContent = 'updated ' + new Date().toLocaleTimeString();
+    const tiles = [['Namespaces', num(ov.namespaces)], ['Datasets', num(ov.datasets)], ['Records', num(ov.records)],
+      ['On disk', bytes(ov.bytes)], ['Index pods up', ov.indexNodesUp + ' / ' + ov.indexNodes],
+      ['Operations logged', num(ov.operationsLogged)], ['Objects read', num(ov.objectsRead)],
+      ['Query p95', ms(ov.queryP95Ms) + ' ms'], ['Errors', num(ov.errors)]];
+    $('tiles').innerHTML = tiles.map(([l, v]) => `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
+
+    $('latency').innerHTML = latencyChart(stats.operations);
+    $('ops').innerHTML = table([
+      {h: 'Operation', f: r => esc(r.op)}, {h: 'Calls', num: 1, f: r => num(r.count)},
+      {h: 'Avg ms', num: 1, f: r => ms(r.avgMs)}, {h: 'p50 ms', num: 1, f: r => ms(r.p50Ms)},
+      {h: 'p95 ms', num: 1, f: r => ms(r.p95Ms)}, {h: 'Max ms', num: 1, f: r => ms(r.maxMs)},
+      {h: 'Avg ids from index', num: 1, f: r => r.avgIds ? num(Math.round(r.avgIds)) : '–'},
+      {h: 'Avg objects', num: 1, f: r => r.avgRecords ? num(Math.round(r.avgRecords)) : '–'},
+      {h: 'Total objects', num: 1, f: r => r.totalRecords ? num(r.totalRecords) : '–'},
+      {h: 'Objects/s', num: 1, f: r => r.recordsPerSec ? num(r.recordsPerSec) : '–'},
+      {h: 'Errors', num: 1, f: r => r.errors ? `<span class="err">${num(r.errors)}</span>` : '0'}],
+      stats.operations, 'No operations logged for this view yet.');
+    const sel = $('opFilter'), known = new Set([...sel.options].map(o => o.value));
+    stats.operations.forEach(o => { if (!known.has(o.op)) sel.add(new Option(o.op, o.op)); });
+
+    const qcols = [
+      {h: 'Time', f: r => time(r.ts)}, {h: 'Op', f: r => esc(r.op)}, {h: 'Dataset', f: r => esc(r.dataset)},
+      {h: 'Filter', cls: 'filter', f: r => esc(r.filter || '')}, {h: 'Ids', num: 1, f: r => num(r.idsReturned)},
+      {h: 'Records', num: 1, f: r => num(r.records)}, {h: 'Index ms', num: 1, f: r => ms(r.indexMs)},
+      {h: 'Read ms', num: 1, f: r => ms(r.readMs)}, {h: 'Total ms', num: 1, f: r => ms(r.totalMs)},
+      {h: 'Status', f: r => r.ok ? 'ok' : `<span class="err" title="${esc(r.error)}">error</span>`},
+      {h: 'Client', f: r => esc(r.client)}];
+    $('queries').innerHTML = table(qcols, queries, 'No operations logged yet. Run the demo or your app with logging.queryLogDir set.');
+    $('slowest').innerHTML = table(qcols.filter(c => ['Time','Op','Dataset','Filter','Records','Total ms'].includes(c.h)), stats.slowestQueries, 'No queries yet.');
+
+    $('nodes').innerHTML = table([
+      {h: 'Pod', f: r => `<span title="${esc(r.url)}">${esc(r.node)}</span>`}, {h: 'Status', f: r => `<span class="pill ${r.up ? 'up' : 'down'}">${r.up ? 'up' : 'down'}</span>`},
+      {h: 'Namespaces', f: r => esc(r.namespaces.join(', '))}, {h: 'Persistence', f: r => esc(r.persistence)},
+      {h: 'Datasets', num: 1, f: r => num(r.datasets)}, {h: 'Documents', num: 1, f: r => num(r.documents)},
+      {h: 'Queries', num: 1, f: r => num(r.queries)}], nodes, 'No index pods configured.');
+
+    $('namespaces').innerHTML = table([
+      {h: 'Namespace', f: r => `<a href="?namespace=${encodeURIComponent(r.namespace)}" title="Show only this namespace">${esc(r.namespace)}</a>`}, {h: 'Storage', f: r => esc(r.storage)}, {h: 'Index pod', f: r => esc(r.indexNode)},
+      {h: 'Datasets', num: 1, f: r => num(r.datasets)}, {h: 'Records', num: 1, f: r => num(r.records)},
+      {h: 'Size', num: 1, f: r => bytes(r.bytes)}], ns, 'No namespaces yet.');
+
+    $('datasets').innerHTML = table([
+      {h: 'Dataset', f: r => `<a href="?dataset=${encodeURIComponent(r.dataset)}" title="Show only this cache">${esc(r.dataset)}</a>`},
+      {h: 'Domain', f: r => esc(r.domain) + ' v' + r.domainVersion}, {h: 'Codec', f: r => esc(r.codec || '')},
+      {h: 'Storage', f: r => esc(r.storage)}, {h: 'Index pod', f: r => esc(r.indexNode)},
+      {h: 'Records', num: 1, f: r => num(r.records)}, {h: 'Indexed', num: 1, f: r => num(r.indexDocuments)},
+      {h: 'Size', num: 1, f: r => bytes(r.bytes)}, {h: 'Segments', num: 1, f: r => num(r.files)}], ds, 'No datasets yet.');
+  } catch (e) {
+    $('updated').textContent = 'dashboard API unreachable: ' + e;
+  }
+}
+$('opFilter').addEventListener('change', refresh);
+$('scope').addEventListener('change', () => {
+  const q = scopeQuery();
+  history.replaceState(null, '', q ? '?' + q : location.pathname);
+  $('opFilter').innerHTML = '<option value="">all operations</option>';
+  refresh();
+});
+loadScopes().catch(() => {}).then(refresh);
+setInterval(refresh, 5000);
+setInterval(() => loadScopes().catch(() => {}), 30000);
+</script>
+</body>
+</html>

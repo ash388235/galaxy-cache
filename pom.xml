@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>io.galaxycache</groupId>
+  <artifactId>galaxy-cache-parent</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+  <name>Galaxy Cache</name>
+  <description>Client-driven distributed key-value cache with pluggable storage and in-memory index pods.</description>
+
+  <modules>
+    <module>galaxy-common</module>
+    <module>galaxy-storage-api</module>
+    <module>galaxy-storage-file</module>
+    <module>galaxy-index-api</module>
+    <module>galaxy-config</module>
+    <module>galaxy-index-server</module>
+    <module>galaxy-grid-api</module>
+    <module>galaxy-grid-node</module>
+    <module>galaxy-client</module>
+    <module>galaxy-grid-client</module>
+    <module>galaxy-dashboard</module>
+    <module>galaxy-examples</module>
+  </modules>
+
+  <properties>
+    <maven.compiler.release>21</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <jackson.version>2.17.2</jackson.version>
+    <junit.version>5.10.3</junit.version>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>${jackson.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.junit</groupId>
+        <artifactId>junit-bom</artifactId>
+        <version>${junit.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-common</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-storage-api</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-storage-file</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-index-api</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-config</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-index-server</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-client</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-dashboard</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-grid-api</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-grid-node</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-grid-client</artifactId><version>${project.version}</version></dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>3.13.0</version>
+          <configuration>
+            <release>21</release>
+            <parameters>true</parameters>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>3.3.1</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-shade-plugin</artifactId>
+          <version>3.6.0</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+  </build>
+</project>

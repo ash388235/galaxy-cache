@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+  <parent>
+    <groupId>io.galaxycache</groupId>
+    <artifactId>galaxy-cache-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>  <artifactId>galaxy-grid-node</artifactId>
+  <description>Grid data node: owns partitions on local disk, indexes them in memory, serves the grid protocol.</description>
+  <dependencies>
+    <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-grid-api</artifactId></dependency>
+    <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-storage-file</artifactId></dependency>
+    <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-index-server</artifactId></dependency>
+    <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-config</artifactId></dependency>
+  </dependencies>
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <executions>
+          <execution>
+            <phase>package</phase>
+            <goals><goal>shade</goal></goals>
+            <configuration>
+              <finalName>galaxy-grid-node</finalName>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>io.galaxycache.grid.node.GridNodeMain</mainClass>
+                </transformer>
+              </transformers>
+              <filters><filter><artifact>*:*</artifact><excludes><exclude>META-INF/*.SF</exclude><exclude>META-INF/*.DSA</exclude><exclude>META-INF/*.RSA</exclude><exclude>module-info.class</exclude></excludes></filter></filters>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+    </plugins>
+  </build>
+</project>

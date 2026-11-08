@@ -1,0 +1,56 @@
+# Galaxy Cache local topology. Relative paths are resolved against this file's folder.
+cluster: local-dev
+
+# Shared folder where namespaces created at runtime are registered (no central server needed).
+catalog:
+  path: ../galaxy-data/catalog
+
+# Where data lives. A storage can hold many namespaces; a namespace uses exactly one storage.
+storages:
+  local-fs-1:
+    type: file
+    path: ../galaxy-data/fs1
+    pageSize: 65536          # 64 KiB pages
+    segmentSize: 67108864    # 64 MiB segment files
+  local-fs-2:
+    type: file
+    path: ../galaxy-data/fs2
+  # 3-node grid (phase 1: no backups, no failover). Each node keeps its partitions in path/<node>.
+  # Start with scripts\start-grid.ps1. Clients send each key straight to its owner node over binary TCP.
+  grid-1:
+    type: grid
+    path: ../galaxy-data/grid
+    nodes: { node-1: "localhost:7101", node-2: "localhost:7102", node-3: "localhost:7103" }
+    partitions: 1024
+    connectionsPerNode: 4
+  # archive-s3: { type: s3, bucket: my-bucket, prefix: galaxy/ }   # later
+
+# Index pods. A pod can serve many namespaces; a namespace uses exactly one pod.
+indexNodes:
+  idx-a:
+    url: http://localhost:7070
+    persistence: noop        # nothing survives restart; rebuild with cache.reindex()
+  idx-b:
+    url: http://localhost:7071
+    persistence: memory      # dummy backup (stand-in for postgres)
+  grid-1:
+    url: http://localhost:7201   # any grid node's admin port; returns stats for the whole grid
+  # idx-pg:
+  #   url: http://localhost:7072
+  #   persistence: postgres
+  #   persistenceSettings: { jdbcUrl: "jdbc:postgresql://localhost:5432/galaxy", user: galaxy, password: galaxy }
+
+# Static namespace placement. More can be added at runtime with client.createNamespace(...).
+namespaces:
+  trading: { storage: local-fs-1, indexNode: idx-a }
+  risk:    { storage: local-fs-2, indexNode: idx-b }
+  grid:    { storage: grid-1, indexNode: grid-1 }   # served by the 3-node grid (index lives on the nodes)
+
+client:
+  readParallelism: 8         # threads reading storage in parallel
+  readBatchSize: 512         # ids per parallel read chunk
+  indexTimeoutMs: 5000
+  indexRetries: 2
+
+logging:
+  queryLogDir: ../galaxy-data/logs   # [GALAXY-QUERY] lines, read by the dashboard
