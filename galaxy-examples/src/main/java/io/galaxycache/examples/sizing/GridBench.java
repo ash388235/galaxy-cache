@@ -40,12 +40,14 @@ public final class GridBench {
         boolean doImport = false;
         boolean bench = false;
         boolean readAll = false;
+        boolean reindex = false;
         for (int i = 0; i < args.length; i++) {
             switch (args[i]) {
                 case "--config" -> configPath = args[++i];
                 case "--import" -> doImport = true;
                 case "--bench" -> bench = true;
                 case "--read-all" -> readAll = true;
+                case "--reindex" -> reindex = true;
                 default -> throw new IllegalArgumentException("unknown option " + args[i]);
             }
         }
@@ -53,12 +55,21 @@ public final class GridBench {
         DatasetId srcId = DatasetId.of("sizing", "txn", "perf1m", LocalDate.of(2026, 11, 7));
         DatasetId gridId = DatasetId.of("grid", "txn", "perf1m", LocalDate.of(2026, 11, 7));
         try (GalaxyClient client = new GalaxyClient(config)) {
-            GalaxyCache<BaseTransaction> direct = client.cache(srcId, BaseTransaction.class);
+            // the direct copy may be gone (deleted once the grid held its own); then only the grid is measured
+            GalaxyCache<BaseTransaction> direct = client.listDatasets("sizing").contains(srcId)
+                    ? client.cache(srcId, BaseTransaction.class) : null;
             if (doImport && client.listDatasets("grid").contains(gridId)) {
                 client.dropDataset(gridId);
             }
             GalaxyCache<BaseTransaction> grid = client.cache(gridId, BaseTransaction.class);
-            int n = (int) direct.stats().liveRecords();
+            int n = (int) (direct != null ? direct.stats() : grid.stats()).liveRecords();
+            if (reindex) {
+                section("Reindex the grid from its records (scan, decode, extract index fields, upsert, persisted on nodes)");
+                long t0 = System.nanoTime();
+                long docs = grid.reindex();
+                double s = (System.nanoTime() - t0) / 1e9;
+                say("reindexed %,d objects in %.0f s = %,.0f objects/s", docs, s, docs / s);
+            }
             if (doImport) {
                 importAll(direct, grid, n);
             }
@@ -135,11 +146,11 @@ public final class GridBench {
                 not(eq("currency", "USD")),
                 all());
         for (Filter f : filters) {
-            long dc = direct.count(f);
             long gc = grid.count(f);
-            double di = best(() -> direct.queryIds(Query.where(f)));
+            long dc = direct == null ? gc : direct.count(f);
+            double di = direct == null ? Double.NaN : best(() -> direct.queryIds(Query.where(f)));
             double gi = best(() -> grid.queryIds(Query.where(f)));
-            double dq = best(() -> direct.query(Query.where(f).limit(5_000)));
+            double dq = direct == null ? Double.NaN : best(() -> direct.query(Query.where(f).limit(5_000)));
             double gq = best(() -> grid.query(Query.where(f).limit(5_000)));
             String fl = f.toString();
             System.out.printf("   %-62s %,9d | %8.1f %8.0f | %8.1f %8.0f%s%n",
@@ -151,7 +162,7 @@ public final class GridBench {
         section("getAll by ids (random ids, 8 read threads), best of 2");
         for (int size : new int[]{100, 1_000, 5_000, 20_000}) {
             List<String> ids = randomIds(r, n, size);
-            double dm = best2(() -> direct.getAll(ids));
+            double dm = direct == null ? Double.NaN : best2(() -> direct.getAll(ids));
             double gm = best2(() -> grid.getAll(ids));
             say("getAll(%,6d): direct %,8.0f ms (%,6.0f obj/s)   grid %,8.0f ms (%,6.0f obj/s)", size, dm,
                     size / (dm / 1000), gm, size / (gm / 1000));
@@ -160,14 +171,19 @@ public final class GridBench {
         for (int i = 0; i < 20_000; i++) {
             consecutive.add(String.format("TX%010d", 400_000 + i));
         }
-        double dm = best2(() -> direct.getAll(consecutive));
+        double dm = direct == null ? Double.NaN : best2(() -> direct.getAll(consecutive));
         double gm = best2(() -> grid.getAll(consecutive));
         say("getAll(20,000 consecutive): direct %,6.0f ms (%,6.0f obj/s)   grid %,6.0f ms (%,6.0f obj/s)", dm,
                 20_000 / (dm / 1000), gm, 20_000 / (gm / 1000));
 
         section("get(id): 2,000 random ids one after another, then 8,000 from 8 threads");
         List<String> ids = randomIds(r, n, 2_000);
-        for (var e : List.of(Map.entry("direct", direct), Map.entry("grid", grid))) {
+        List<Map.Entry<String, GalaxyCache<BaseTransaction>>> paths = new ArrayList<>();
+        if (direct != null) {
+            paths.add(Map.entry("direct", direct));
+        }
+        paths.add(Map.entry("grid", grid));
+        for (var e : paths) {
             GalaxyCache<BaseTransaction> c = e.getValue();
             ids.forEach(id -> c.get(id)); // warm
             double[] lat = new double[ids.size()];

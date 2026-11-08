@@ -45,6 +45,8 @@ public final class GridProtocol {
     public static final byte INDEX_QUERY = 13;
     public static final byte INDEX_DROP = 14;
     public static final byte NODE_STATS = 15;
+    /** Node moves every record (and index document) it does not own to the owner; answers [moved: long]. */
+    public static final byte REBALANCE = 16;
 
     // ---- response status
     public static final byte PART = 0;

@@ -99,6 +99,7 @@ public final class GridNode implements AutoCloseable {
             }
         }
         s.put("path", dataDir.toString());
+        s.put("exclusive", true); // a node is the only writer of its folder
         this.store = StorageProviders.open("file", "grid-" + name, s);
         Map<String, Object> is = new LinkedHashMap<>(s);
         is.put("path", dataDir.resolveSibling(dataDir.getFileName() + "-index").toString());
@@ -185,6 +186,8 @@ public final class GridNode implements AutoCloseable {
     }
 
     private final Map<String, Long> unindexed = new ConcurrentHashMap<>();
+    /** Index documents of keys another node owns (after a topology change); REBALANCE moves them. */
+    private final Map<String, Long> misplaced = new ConcurrentHashMap<>();
 
     /**
      * Rebuilds the in-memory index from the node's index store, before the node serves anything, and compares
@@ -199,6 +202,9 @@ public final class GridNode implements AutoCloseable {
             List<IndexDocument> batch = new ArrayList<>(10_000);
             long[] n = new long[1];
             indexStore.scan(ds, rec -> {
+                if (!topology.ownerOf(rec.id()).name().equals(name)) {
+                    misplaced.merge(ds.key(), 1L, Long::sum);
+                }
                 @SuppressWarnings("unchecked")
                 Map<String, Object> fields = Json.read(rec.payload(), Map.class);
                 batch.add(new IndexDocument(rec.id(), fields));
@@ -225,6 +231,71 @@ public final class GridNode implements AutoCloseable {
         }
         LOG.log(System.Logger.Level.INFO, "grid node {0} restored {1} index documents in {2} ms", name, docs,
                 (System.nanoTime() - t0) / 1_000_000);
+        misplaced.forEach((k, v) -> LOG.log(System.Logger.Level.WARNING, "grid node {0}: {1} keys of {2} belong to other "
+                + "nodes (topology changed); run GridRebalance", name, v, k));
+    }
+
+    /**
+     * Moves every record this node holds but no longer owns (after the member list changed) to its owner, with
+     * its index document, then deletes it here. Batches of about 8 MB per owner; a batch is deleted locally only
+     * after the owner acknowledged both the records and the index documents. Safe to run again.
+     */
+    synchronized long rebalance() {
+        long moved = 0;
+        for (DatasetId ds : store.listDatasets(null)) {
+            DatasetMetadata md = store.metadata(ds).orElseThrow();
+            for (GridTopology.Member m : topology.members()) {
+                if (!m.name().equals(name)) {
+                    peers.call(m, GridProtocol.ENSURE_DATASET, Json.writeBytes(md), 600_000);
+                }
+            }
+            Map<GridTopology.Member, List<StoredRecord>> batches = new LinkedHashMap<>();
+            Map<GridTopology.Member, long[]> sizes = new LinkedHashMap<>();
+            long[] count = new long[1];
+            store.scan(ds, rec -> {
+                GridTopology.Member owner = topology.ownerOf(rec.id());
+                if (owner.name().equals(name)) {
+                    return;
+                }
+                batches.computeIfAbsent(owner, k -> new ArrayList<>()).add(rec);
+                long[] sz = sizes.computeIfAbsent(owner, k -> new long[1]);
+                sz[0] += rec.payload().length;
+                if (sz[0] >= 8L * 1024 * 1024) {
+                    count[0] += moveBatch(ds, owner, batches.remove(owner));
+                    sz[0] = 0;
+                }
+            });
+            for (Map.Entry<GridTopology.Member, List<StoredRecord>> e : batches.entrySet()) {
+                count[0] += moveBatch(ds, e.getKey(), e.getValue());
+            }
+            if (count[0] > 0) {
+                LOG.log(System.Logger.Level.INFO, "grid node {0} moved {1} records of {2} to their owners", name, count[0], ds);
+            }
+            misplaced.remove(ds.key());
+            moved += count[0];
+        }
+        return moved;
+    }
+
+    private long moveBatch(DatasetId ds, GridTopology.Member owner, List<StoredRecord> recs) {
+        List<String> ids = recs.stream().map(StoredRecord::id).toList();
+        peers.call(owner, GridProtocol.PUT_RECORDS, GridRecords.records(ds.key(), recs), 600_000);
+        if (indexDatasets.contains(ds)) {
+            List<IndexDocument> docs = new ArrayList<>();
+            indexStore.getAll(ds, ids).values().forEach(rec -> {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> fields = Json.read(rec.payload(), Map.class);
+                docs.add(new IndexDocument(rec.id(), fields));
+            });
+            if (!docs.isEmpty()) {
+                peers.call(owner, GridProtocol.INDEX_UPSERT, Json.writeBytes(new Messages.UpsertRequest(ds, docs)), 600_000);
+            }
+            indexStore.deleteAll(ds, ids);
+            index.delete(ds, ids);
+        }
+        store.deleteAll(ds, ids);
+        count("recordsMovedOut", ids.size());
+        return ids.size();
     }
 
     private void ensureIndexDataset(DatasetId ds) {
@@ -339,7 +410,9 @@ public final class GridNode implements AutoCloseable {
             lock.lock();
             try {
                 GridProtocol.writeFrame(out, id, status, body, 0, len);
-                out.flush();
+                if (!lock.hasQueuedThreads()) {
+                    out.flush(); // otherwise the next frame's writer flushes both
+                }
             } catch (IOException e) {
                 throw new GalaxyException("write failed: " + e.getMessage(), e);
             } finally {
@@ -506,6 +579,7 @@ public final class GridNode implements AutoCloseable {
                     r.last(new byte[0]);
                 }
                 case GridProtocol.NODE_STATS -> r.last(Json.writeBytes(nodeStats()));
+                case GridProtocol.REBALANCE -> r.last(new GridProtocol.Out(8).putLong(rebalance()).toBytes());
                 default -> r.error("unknown op " + req.code());
             }
         } catch (RuntimeException e) {
@@ -541,6 +615,7 @@ public final class GridNode implements AutoCloseable {
         c.put("partitionsOwned", (long) topology.partitionCounts().get(name));
         c.put("ready", NodeStatus.READY.equals(state) ? 1L : 0L);
         unindexed.forEach((k, v) -> c.put("unindexedRecords." + k, v));
+        misplaced.forEach((k, v) -> c.put("misplacedKeys." + k, v));
         List<String> namespaces = index.datasetStats().stream().map(d -> d.dataset().namespace()).distinct().toList();
         return new Messages.StatsResponse(name, startedAt, "none (grid phase 1)", namespaces, index.datasetStats(), c);
     }

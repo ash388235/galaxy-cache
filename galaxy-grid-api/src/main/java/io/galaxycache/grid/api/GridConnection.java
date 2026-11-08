@@ -59,7 +59,9 @@ public final class GridConnection implements AutoCloseable {
         writeLock.lock();
         try {
             GridProtocol.writeFrame(out, id, op, body, 0, body.length);
-            out.flush();
+            if (!writeLock.hasQueuedThreads()) {
+                out.flush(); // otherwise the next writer in line flushes both: fewer syscalls under load
+            }
         } catch (IOException e) {
             pending.remove(id);
             fail(e);
@@ -139,7 +141,9 @@ public final class GridConnection implements AutoCloseable {
         writeLock.lock();
         try {
             GridProtocol.writeFrame(out, id, op, body, 0, body.length);
-            out.flush();
+            if (!writeLock.hasQueuedThreads()) {
+                out.flush(); // otherwise the next writer in line flushes both: fewer syscalls under load
+            }
         } catch (IOException e) {
             pending.remove(id);
             fail(e);

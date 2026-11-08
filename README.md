@@ -21,6 +21,9 @@ Design doc: see the project's "Galaxy Cache: Design and Build Plan".
 | `galaxy-config` | cache-configuration jar: YAML topology and the namespace catalog |
 | `galaxy-index-server` | Index pod: in-memory engine, HTTP API, persistence implementations, Dockerfile |
 | `galaxy-client` | client-cache-api jar: `GalaxyClient`, `GalaxyCache<T>` |
+| `galaxy-grid-api` | Grid protocol (binary frames over TCP), partitioning, handshake/auth/TLS, fail-stop monitor |
+| `galaxy-grid-node` | Grid data node: owns partitions on local disk, index in memory (persisted), fail-stop |
+| `galaxy-grid-client` | Storage `type: grid` for the client (key routing, fan-out queries), `GridRebalance` |
 | `galaxy-dashboard` | Web dashboard (port 8080) |
 | `galaxy-examples` | End-to-end local demo |
 
@@ -84,6 +87,48 @@ Filters: `eq`, `ne`, `in`, `gt`, `gte`, `lt`, `lte`, `between`, `prefix`, `exist
 
 Run in a container: `docker build -t galaxy-index galaxy-index-server` then pass `GALAXY_CONFIG` and `GALAXY_NODE`.
 
+## Grid (data nodes, GridGain-style)
+
+A namespace can live on a grid instead of shared storage plus an index pod: each node owns a share of the
+1,024 partitions, keeps those records on its local disk and their index in memory (persisted next to the data),
+and serves a binary TCP protocol. Application code is unchanged: `GalaxyCache` routes `put`/`get`/`getAll`/
+`delete` straight to each key's owner node and sends queries and counts to all nodes in parallel, merging their
+sorted ids so limit/offset give exactly what one index would.
+
+```yaml
+storages:
+  grid-1:
+    type: grid
+    path: ../galaxy-data/grid            # each node keeps path/<node> and path/<node>-index
+    nodes: { node-1: "host1:7101", node-2: "host2:7101", node-3: "host3:7101" }
+    onFailure: exit                      # client processes exit (status 75) when the grid fails
+    authToken: "${env:GALAXY_GRID_TOKEN}"
+namespaces:
+  grid: { storage: grid-1, indexNode: grid-1 }
+```
+
+Start nodes with `java -jar galaxy-grid-node.jar --config galaxy.yaml --grid grid-1 --node node-1` (on Windows,
+`scripts\start-grid.ps1`). Cluster stats: `http://<node>:<port+100>/v1/stats`.
+
+**Run model: fail-stop, no backups.** Nodes start FORMING and serve only when every node is up with the same
+configuration (READY). If any node becomes unreachable for `failAfterMs` (default 5 s), restarts or fails,
+every node stops itself (exit status 2) and every client call fails at once; with `onFailure: exit` client
+processes exit (status 75). Recovery is: start all nodes, then restart the clients. A restarted node reloads its
+index from disk; there is no client-side reindex. `startupWaitMs` bounds how long a client waits for READY.
+
+**Safety checks.** Every connection begins with a handshake comparing a fingerprint of the grid configuration,
+so a node or client with a stale config is refused. Writes are cut into requests of at most `maxBatchBytes`
+(16 MB); objects above 63 MB are refused; large query answers stream. Nodes refuse keys they do not own.
+
+**Security.** `authToken` (at least 16 characters): every connection proves it with HMAC-SHA256 over a nonce,
+so the token never crosses the network. `tls: true` with `tlsKeyStore`/`tlsTrustStore` (PKCS12) encrypts all
+traffic. Nodes listen only on their own host from `nodes` unless `bindAddress` is set. The dashboard listens on
+127.0.0.1 unless started with `--bind`.
+
+**Changing the node list.** Stop the grid, change `nodes` on every host, start all nodes (they report
+`misplacedKeys` in their stats), then run
+`java -cp galaxy-examples.jar io.galaxycache.grid.client.GridRebalance --config galaxy.yaml --grid grid-1`.
+Each node moves the records and index entries it no longer owns straight to their owner.
 ## v1 limits
 
-Local file storage only; no compaction yet (updates and deletes append, old versions stay on disk); Postgres persistence is an untested stub; all clients must use the same domain version; a failed index call after a successful storage write needs `reindex()`.
+Local file storage only; no compaction yet (updates, deletes and rebalancing append, old versions stay on disk); Postgres persistence is an untested stub; all clients must use the same domain version; a failed index call after a successful storage write needs `reindex()` (grid nodes report such records as `unindexedRecords` at startup). Grid: no backups or failover by design (fail-stop), no live rebalancing, no compaction.

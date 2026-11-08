@@ -11,6 +11,7 @@
   <description>Client side of the grid: storage type "grid" (key-routed) and the fan-out index client.</description>
   <dependencies>
     <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-grid-api</artifactId></dependency>
+    <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-config</artifactId></dependency>
     <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-client</artifactId><scope>test</scope></dependency>
     <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-grid-node</artifactId><scope>test</scope></dependency>
   </dependencies>

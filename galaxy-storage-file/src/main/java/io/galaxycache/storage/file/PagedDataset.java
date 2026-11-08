@@ -253,6 +253,13 @@ final class PagedDataset implements AutoCloseable {
 
     // ------------------------------------------------------------------ catch-up
 
+    /** Reads skip the commit check when this process is the only writer (it already knows every commit). */
+    private void refreshUnlessExclusive() {
+        if (!opts.exclusive()) {
+            refresh();
+        }
+    }
+
     /** Replays records committed by any process since our last look. Cheap when nothing changed. */
     void refresh() {
         synchronized (refreshLock) {
@@ -348,7 +355,7 @@ final class PagedDataset implements AutoCloseable {
 
     /** Bulk read: groups ids by segment, sorts by offset and merges nearby records into large reads. */
     Map<String, StoredRecord> getAll(Collection<String> ids) {
-        refresh();
+        refreshUnlessExclusive();
         Map<Integer, List<Map.Entry<String, Loc>>> bySegment = new HashMap<>();
         for (String i : ids) {
             Loc loc = directory.get(i);
@@ -402,7 +409,7 @@ final class PagedDataset implements AutoCloseable {
 
     /** Streams every live record in storage order, reading in bulk. */
     void scan(Consumer<StoredRecord> consumer, int batchSize) {
-        refresh();
+        refreshUnlessExclusive();
         List<Map.Entry<String, Loc>> all = new ArrayList<>(directory.entrySet());
         all.sort(Comparator.<Map.Entry<String, Loc>>comparingInt(e -> e.getValue().segment())
                 .thenComparingLong(e -> e.getValue().offset()));
@@ -420,12 +427,12 @@ final class PagedDataset implements AutoCloseable {
     }
 
     int liveRecords() {
-        refresh();
+        refreshUnlessExclusive();
         return directory.size();
     }
 
     boolean contains(String recordId) {
-        refresh();
+        refreshUnlessExclusive();
         return directory.containsKey(recordId);
     }
 

@@ -13,8 +13,9 @@ import java.util.Map;
  * Static grid membership and the key -> partition -> node mapping shared by every node and client.
  *
  * <p>{@code partition = mix(key.hashCode()) mod partitions} ({@link String#hashCode()} is fixed by the Java
- * spec, so every JVM agrees). Each partition is owned by the member with the highest rendezvous score for
- * it, so adding a member later only moves the partitions that member wins.
+ * spec, so every JVM agrees). Partitions are dealt round-robin over the members sorted by name, so each node
+ * owns the same number (+-1). Changing the member list moves partitions: stop the grid, start it with the new
+ * list, then run the REBALANCE operation (GridRebalance) to move misplaced records to their new owners.
  */
 public final class GridTopology {
 
@@ -45,14 +46,7 @@ public final class GridTopology {
         this.partitions = partitions;
         this.owner = new int[partitions];
         for (int p = 0; p < partitions; p++) {
-            long best = Long.MIN_VALUE;
-            for (int m = 0; m < this.members.size(); m++) {
-                long score = mix64(((long) this.members.get(m).name().hashCode() << 32) ^ p);
-                if (score > best) {
-                    best = score;
-                    owner[p] = m;
-                }
-            }
+            owner[p] = p % this.members.size(); // balanced: every node owns partitions/n (+-1)
         }
     }
 
@@ -144,17 +138,11 @@ public final class GridTopology {
      * refuse to work together unless their fingerprints match, so a stale config can never misroute keys.
      */
     public String fingerprint() {
-        StringBuilder sb = new StringBuilder("v1|").append(partitions).append('|');
+        StringBuilder sb = new StringBuilder("v2-roundrobin|").append(partitions).append('|');
         members.forEach(m -> sb.append(m.name()).append('@').append(m.host()).append(':').append(m.port()).append(';'));
         java.util.zip.CRC32 crc = new java.util.zip.CRC32();
         crc.update(sb.toString().getBytes(java.nio.charset.StandardCharsets.UTF_8));
         return Long.toHexString(crc.getValue()) + "-" + members.size() + "n-" + partitions + "p";
-    }
-
-    private static long mix64(long z) {
-        z = (z ^ (z >>> 33)) * 0xff51afd7ed558ccdL;
-        z = (z ^ (z >>> 33)) * 0xc4ceb9fe1a85ec53L;
-        return z ^ (z >>> 33);
     }
 
     @Override

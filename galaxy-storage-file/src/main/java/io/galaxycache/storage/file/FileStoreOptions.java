@@ -2,8 +2,15 @@ package io.galaxycache.storage.file;
 
 import io.galaxycache.common.GalaxyException;
 
-/** Tuning for {@link FileDataStore}. */
-public record FileStoreOptions(int pageSize, long segmentSize, boolean fsync, int maxReadBytes) {
+/**
+ * Tuning for {@link FileDataStore}. {@code exclusive}: this process is the only one that ever writes these datasets
+ * (a grid node owns its folder), so reads skip the check for other writers' commits.
+ */
+public record FileStoreOptions(int pageSize, long segmentSize, boolean fsync, int maxReadBytes, boolean exclusive) {
+
+    public FileStoreOptions(int pageSize, long segmentSize, boolean fsync, int maxReadBytes) {
+        this(pageSize, segmentSize, fsync, maxReadBytes, false);
+    }
 
     public static final int DEFAULT_PAGE_SIZE = 64 * 1024;
     public static final long DEFAULT_SEGMENT_SIZE = 64L * 1024 * 1024;

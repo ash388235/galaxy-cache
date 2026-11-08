@@ -28,7 +28,8 @@ public final class FileStorageProvider implements StorageProvider {
                 intSetting(settings, "pageSize", FileStoreOptions.DEFAULT_PAGE_SIZE),
                 longSetting(settings, "segmentSize", FileStoreOptions.DEFAULT_SEGMENT_SIZE),
                 boolSetting(settings, "fsync", true),
-                intSetting(settings, "maxReadBytes", FileStoreOptions.DEFAULT_MAX_READ_BYTES));
+                intSetting(settings, "maxReadBytes", FileStoreOptions.DEFAULT_MAX_READ_BYTES),
+                boolSetting(settings, "exclusive", false));
         return new FileDataStore(name, Path.of(path.toString()), o);
     }
 

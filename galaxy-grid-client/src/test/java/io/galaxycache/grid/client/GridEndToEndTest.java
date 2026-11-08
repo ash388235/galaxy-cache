@@ -135,7 +135,7 @@ class GridEndToEndTest {
     void partitionsSpreadEvenlyAndAreStable() {
         Map<String, Integer> counts = topology.partitionCounts();
         assertEquals(1024, counts.values().stream().mapToInt(Integer::intValue).sum());
-        counts.values().forEach(c -> assertTrue(c > 250 && c < 450, "uneven partition split " + counts));
+        counts.values().forEach(c -> assertTrue(c == 341 || c == 342, "uneven partition split " + counts));
         GridTopology again = GridTopology.fromSettings(config.storage("grid-1").settings());
         for (int i = 0; i < 1000; i++) {
             assertEquals(topology.ownerOf("K" + i), again.ownerOf("K" + i));
@@ -261,11 +261,15 @@ class GridEndToEndTest {
 
     @Test
     void clientRefusesToStartUntilEveryNodeIsUp() {
-        nodes.get(2).close();
-        nodes.remove(2);
-        // the remaining nodes stay FORMING (they never saw node-3) and refuse data
+        // start from two nodes only: if node-3 had been up, even briefly, a peer could already be READY and would
+        // (correctly) fail-stop when it left
+        nodes.forEach(GridNode::close);
+        nodes.clear();
+        startNodes("node-1", "node-2");
+        // they stay FORMING (they never saw node-3) and refuse data
         sleep(500);
         assertEquals("FORMING", nodes.get(0).state());
+        assertEquals("FORMING", nodes.get(1).state());
         System.setProperty("galaxy.grid.startupWaitMs", "1500");
         try (GalaxyClient client = new GalaxyClient(config)) {
             GalaxyException e = assertThrows(GalaxyException.class,
@@ -408,6 +412,49 @@ class GridEndToEndTest {
             orders.reindex();                                            // repairs it
             assertEquals(2_000, orders.count(all()));
         }
+    }
+
+    @Test
+    void addingANodeOfflineThenRebalancingKeepsEveryKey() throws IOException {
+        DatasetId ds = DatasetId.of("orders", "eq", "us", "2026-11-08");
+        List<Order> all = new ArrayList<>();
+        for (int i = 0; i < 3_000; i++) {
+            all.add(new Order(i));
+        }
+        try (GalaxyClient client = new GalaxyClient(config)) {
+            client.cache(ds, Order.class).putAll(all);
+        }
+        // stop the grid and restart it with a 4th node (same folders for nodes 1-3)
+        nodes.forEach(GridNode::close);
+        nodes.clear();
+        String yaml = Files.readString(tmp.resolve("galaxy.yaml"));
+        int p4 = freePort();
+        yaml = yaml.replace("\" }\nindexNodes", "\", node-4: \"localhost:" + p4 + "\" }\nindexNodes");
+        Files.writeString(tmp.resolve("galaxy.yaml"), yaml);
+        config = GalaxyConfig.load(tmp.resolve("galaxy.yaml"));
+        topology = GridTopology.fromSettings(config.storage("grid-1").settings());
+        assertEquals(4, topology.members().size());
+        startNodes("node-1", "node-2", "node-3", "node-4");
+        awaitNodesReady();
+        long misplaced = nodes.stream().mapToLong(n -> n.nodeStatsForTest().counters()
+                .getOrDefault("misplacedKeys." + ds.key(), 0L)).sum();
+        assertTrue(misplaced > 500, "misplaced " + misplaced); // about a quarter move to node-4, more shift around
+
+        Map<String, Long> moved = GridRebalance.run(config.storage("grid-1").settings());
+        assertEquals(misplaced, moved.values().stream().mapToLong(Long::longValue).sum());
+
+        try (GalaxyClient client = new GalaxyClient(config)) {
+            GalaxyCache<Order> orders = client.cache(ds, Order.class);
+            assertEquals(3_000, orders.stats().liveRecords());
+            assertEquals(3_000, orders.count(all()));
+            assertEquals(750, orders.count(eq("symbol", "NVDA")));
+            assertEquals(3_000, orders.getAll(all.stream().map(o -> o.orderId).toList()).size());
+            assertEquals(1234, orders.get("ORD-001234").orElseThrow().quantity);
+            GridDataStore store = (GridDataStore) GalaxyClientAccess.store(client, "grid-1");
+            store.statsPerNode(ds).forEach((node, st) -> assertTrue(st.liveRecords() > 600, node + " " + st));
+        }
+        assertEquals(0, GridRebalance.run(config.storage("grid-1").settings()).values().stream()
+                .mapToLong(Long::longValue).sum()); // nothing left to move
     }
 
     @Test
