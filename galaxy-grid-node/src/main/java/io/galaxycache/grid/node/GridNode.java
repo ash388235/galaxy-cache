@@ -103,13 +103,13 @@ public final class GridNode implements AutoCloseable {
         Map<String, Object> is = new LinkedHashMap<>(s);
         is.put("path", dataDir.resolveSibling(dataDir.getFileName() + "-index").toString());
         this.indexStore = StorageProviders.open("file", "grid-" + name + "-index", is);
-        this.peers = new GridClient(topology, 1, (int) Math.max(2_000, settings.heartbeatMs() * 2));
+        this.peers = new GridClient(topology, 1, (int) Math.max(2_000, settings.heartbeatMs() * 2), null,
+                settings.security());
         try {
-            server = new ServerSocket();
-            server.setReuseAddress(true);
-            server.setReceiveBufferSize(1024 * 1024);
-            server.bind(new InetSocketAddress(port), 256);
-            admin = adminPort < 0 ? null : HttpServer.create(new InetSocketAddress(adminPort), 64);
+            // listen only on this node's own address unless bindAddress says otherwise (e.g. 0.0.0.0 in a container)
+            String bind = settings.bindAddress() != null ? settings.bindAddress() : topology.member(name).host();
+            server = settings.security().serverSocket(bind, port);
+            admin = adminPort < 0 ? null : HttpServer.create(new InetSocketAddress(bind, adminPort), 64);
         } catch (IOException e) {
             throw new GalaxyException("grid node " + name + " cannot bind port " + port + ": " + e.getMessage(), e);
         }
@@ -155,13 +155,21 @@ public final class GridNode implements AutoCloseable {
             });
             admin.start();
         }
-        LOG.log(System.Logger.Level.INFO, "grid node {0} listening on {1}, owns {2} of {3} partitions", name,
-                port(), topology.partitionCounts().get(name), topology.partitions());
+        LOG.log(System.Logger.Level.INFO, "grid node {0} listening on {1}:{2} ({3}, {4}), owns {5} of {6} partitions",
+                name, server.getInetAddress().getHostAddress(), String.valueOf(port()),
+                settings.security().tls() ? "TLS" : "plain TCP",
+                settings.security().token() != null ? "token auth" : "NO AUTH",
+                topology.partitionCounts().get(name), topology.partitions());
         return this;
     }
 
     public int port() {
         return server.getLocalPort();
+    }
+
+    /** The address the protocol port is bound to. */
+    public String boundAddress() {
+        return server.getInetAddress().getHostAddress();
     }
 
     public String name() {
@@ -291,7 +299,7 @@ public final class GridNode implements AutoCloseable {
             DataInputStream in = new DataInputStream(new BufferedInputStream(s.getInputStream(), 256 * 1024));
             DataOutputStream out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream(), 1024 * 1024));
             s.setSoTimeout(10_000);
-            String refused = GridProtocol.nodeHandshake(in, out, topology.fingerprint(), null);
+            String refused = GridProtocol.nodeHandshake(in, out, topology.fingerprint(), settings.security().token());
             if (refused != null) {
                 count("connectionsRefused", 1);
                 LOG.log(System.Logger.Level.WARNING, "grid node {0} refused a connection from {1}: {2}", name,

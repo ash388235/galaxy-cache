@@ -22,11 +22,13 @@ import java.util.regex.Pattern;
  * startupWaitMs        60000    how long a client waits for all nodes to be READY
  * onFailure            throw | exit   what a client does when the grid fails      clients
  * maxBatchBytes        16777216 records per write request are split at this size
+ * authToken, tls...    see {@link GridSecurity}
+ * bindAddress          address nodes listen on (default: the node's host from 'nodes')
  * </pre>
  */
 public record GridSettings(GridTopology topology, int connectionsPerNode, int timeoutMs, long heartbeatMs,
                            long failAfterMs, long startupWaitMs, String onFailure, int maxBatchBytes,
-                           Map<String, Object> raw) {
+                           GridSecurity security, String bindAddress, Map<String, Object> raw) {
 
     private static final Pattern ENV = Pattern.compile("\\$\\{env:([A-Za-z0-9_]+)}");
 
@@ -39,6 +41,8 @@ public record GridSettings(GridTopology topology, int connectionsPerNode, int ti
                 num(settings, "startupWaitMs", 60_000),
                 str(settings, "onFailure", "throw"),
                 (int) num(settings, "maxBatchBytes", 16L * 1024 * 1024),
+                GridSecurity.from(settings),
+                str(settings, "bindAddress", null),
                 settings);
     }
 

@@ -51,7 +51,7 @@ class GridEndToEndTest {
         public Order() {
         }
 
-        Order(int i) {
+        public Order(int i) {
             orderId = String.format("ORD-%06d", i);
             symbol = new String[]{"AAPL", "MSFT", "NVDA", "TSLA"}[i % 4];
             quantity = i;

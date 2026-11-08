@@ -29,6 +29,7 @@ public final class GridClient implements AutoCloseable {
     private final Map<String, GridConnection[]> pools = new ConcurrentHashMap<>();
     private final Map<String, AtomicInteger> rr = new ConcurrentHashMap<>();
     private final Consumer<String> onConnectionLost;
+    private final GridSecurity security;
     private volatile String failure;
 
     public GridClient(GridTopology topology, int connectionsPerNode, int timeoutMs) {
@@ -37,6 +38,12 @@ public final class GridClient implements AutoCloseable {
 
     /** @param onConnectionLost if not null, called when an established connection breaks (fail-fast clients) */
     public GridClient(GridTopology topology, int connectionsPerNode, int timeoutMs, Consumer<String> onConnectionLost) {
+        this(topology, connectionsPerNode, timeoutMs, onConnectionLost, GridSecurity.NONE);
+    }
+
+    public GridClient(GridTopology topology, int connectionsPerNode, int timeoutMs, Consumer<String> onConnectionLost,
+                      GridSecurity security) {
+        this.security = security;
         this.topology = topology;
         this.connectionsPerNode = Math.max(1, connectionsPerNode);
         this.timeoutMs = timeoutMs;
@@ -71,7 +78,7 @@ public final class GridClient implements AutoCloseable {
                     if (c != null && onConnectionLost != null) {
                         throw new GridUnavailableException("connection to grid node " + m.name() + " was lost");
                     }
-                    c = new GridConnection(m, topology.fingerprint(), Math.min(timeoutMs, 5_000), onConnectionLost);
+                    c = new GridConnection(m, topology.fingerprint(), Math.min(timeoutMs, 5_000), onConnectionLost, security);
                     pool[i] = c;
                 }
             }
@@ -157,7 +164,7 @@ public final class GridClient implements AutoCloseable {
             throw new GridUnavailableException(f);
         }
         java.util.concurrent.BlockingQueue<Object> q = new java.util.concurrent.ArrayBlockingQueue<>(4);
-        GridConnection c = new GridConnection(m, topology.fingerprint(), Math.min(timeoutMs, 5_000), onConnectionLost);
+        GridConnection c = new GridConnection(m, topology.fingerprint(), Math.min(timeoutMs, 5_000), onConnectionLost, security);
         try {
             c.stream(op, body, q);
             while (true) {

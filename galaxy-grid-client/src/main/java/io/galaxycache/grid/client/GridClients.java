@@ -51,8 +51,8 @@ final class GridClients {
             if (m != null) {
                 m.fail(reason);
             }
-        });
-        GridClient monClient = new GridClient(topo, 1, (int) Math.max(2_000, s.heartbeatMs() * 2));
+        }, s.security());
+        GridClient monClient = new GridClient(topo, 1, (int) Math.max(2_000, s.heartbeatMs() * 2), null, s.security());
         ClusterMonitor m = new ClusterMonitor(monClient, topo.members(), topo.fingerprint(), s.heartbeatMs(),
                 s.failAfterMs(), true, reason -> {
             data.fail(reason);

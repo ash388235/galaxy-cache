@@ -53,12 +53,17 @@ public final class DashboardServer implements AutoCloseable {
     private final HttpServer server;
 
     public DashboardServer(GalaxyConfig config, int port) {
+        this(config, "127.0.0.1", port);
+    }
+
+    /** @param bind address to listen on; 127.0.0.1 by default (the dashboard has no login), 0.0.0.0 for all */
+    public DashboardServer(GalaxyConfig config, String bind, int port) {
         this.config = config;
         this.catalog = new NamespaceCatalog(config);
         String logDir = config.logging().queryLogDir();
         this.logs = new QueryLogReader(logDir == null ? null : Path.of(logDir), 50_000);
         try {
-            this.server = HttpServer.create(new InetSocketAddress(port), 64);
+            this.server = HttpServer.create(new InetSocketAddress(bind, port), 64);
         } catch (IOException e) {
             throw new IllegalStateException("Cannot bind dashboard on port " + port, e);
         }

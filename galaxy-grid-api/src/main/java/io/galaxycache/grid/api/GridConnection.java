@@ -86,18 +86,19 @@ public final class GridConnection implements AutoCloseable {
      */
     public GridConnection(GridTopology.Member member, String fingerprint, int connectTimeoutMs,
                           java.util.function.Consumer<String> onLost) {
+        this(member, fingerprint, connectTimeoutMs, onLost, GridSecurity.NONE);
+    }
+
+    public GridConnection(GridTopology.Member member, String fingerprint, int connectTimeoutMs,
+                          java.util.function.Consumer<String> onLost, GridSecurity security) {
         this.member = member;
         this.onLost = onLost == null ? reason -> { } : onLost;
         try {
-            socket = new Socket();
-            socket.setTcpNoDelay(true);
-            socket.setReceiveBufferSize(4 * 1024 * 1024);
-            socket.setSendBufferSize(1024 * 1024);
-            socket.connect(new InetSocketAddress(member.host(), member.port()), connectTimeoutMs);
+            socket = security.clientSocket(member.host(), member.port(), connectTimeoutMs);
             out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream(), 256 * 1024));
             in = new DataInputStream(new BufferedInputStream(socket.getInputStream(), 1024 * 1024));
             socket.setSoTimeout(connectTimeoutMs);
-            GridProtocol.clientHandshake(in, out, fingerprint, null, "grid node " + member);
+            GridProtocol.clientHandshake(in, out, fingerprint, security.token(), "grid node " + member);
             socket.setSoTimeout(0);
         } catch (GalaxyException e) {
             closeQuietly();

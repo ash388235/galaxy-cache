@@ -30,6 +30,14 @@ storages:
     failAfterMs: 5000
     startupWaitMs: 60000
     onFailure: exit
+    # security (production): uncomment and set GALAXY_GRID_TOKEN on every node and client host
+    # authToken: "${env:GALAXY_GRID_TOKEN}"       # >= 16 chars; proven with HMAC, never sent
+    # tls: true
+    # tlsKeyStore: /etc/galaxy/grid-node.p12       # node key + certificate (PKCS12)
+    # tlsKeyStorePassword: "${env:GALAXY_TLS_PASSWORD}"
+    # tlsTrustStore: /etc/galaxy/grid-ca.p12       # CA / certificates clients and nodes trust
+    # tlsTrustStorePassword: "${env:GALAXY_TLS_PASSWORD}"
+    # bindAddress: 0.0.0.0                         # default: the node's own host from 'nodes'
   # archive-s3: { type: s3, bucket: my-bucket, prefix: galaxy/ }   # later
 
 # Index pods. A pod can serve many namespaces; a namespace uses exactly one pod.
