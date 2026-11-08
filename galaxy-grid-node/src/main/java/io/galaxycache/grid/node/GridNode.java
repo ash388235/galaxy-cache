@@ -339,8 +339,14 @@ public final class GridNode implements AutoCloseable {
     }
 
     private void ensureIndexDataset(DatasetId ds) {
-        if (indexDatasets.add(ds)) {
-            indexStore.ensureDataset(new DatasetMetadata(ds, "index-fields", "json", 1, "json", java.time.Instant.now()));
+        if (indexDatasets.contains(ds)) {
+            return;
+        }
+        synchronized (indexDatasets) { // marked only once it exists: concurrent first writes must wait for it
+            if (!indexDatasets.contains(ds)) {
+                indexStore.ensureDataset(new DatasetMetadata(ds, "index-fields", "json", 1, "json", java.time.Instant.now()));
+                indexDatasets.add(ds);
+            }
         }
     }
 

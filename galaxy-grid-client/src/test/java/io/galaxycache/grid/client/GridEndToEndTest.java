@@ -489,6 +489,34 @@ class GridEndToEndTest {
     }
 
     @Test
+    void concurrentFirstWritesToANewDatasetAllSucceed() throws Exception {
+        awaitNodesReady();
+        try (GalaxyClient client = new GalaxyClient(config)) {
+            for (int round = 0; round < 15; round++) {
+                DatasetId ds = DatasetId.of("orders", "first" + round, "us", "2026-11-08");
+                GalaxyCache<Order> orders = client.cache(ds, Order.class);
+                java.util.concurrent.ExecutorService pool = java.util.concurrent.Executors.newFixedThreadPool(12);
+                java.util.concurrent.CountDownLatch go = new java.util.concurrent.CountDownLatch(1);
+                List<java.util.concurrent.Future<?>> fs = new ArrayList<>();
+                for (int t = 0; t < 12; t++) {
+                    int n = t;
+                    fs.add(pool.submit(() -> {
+                        go.await();
+                        orders.put(new Order(n));
+                        return null;
+                    }));
+                }
+                go.countDown();
+                for (var f : fs) {
+                    f.get(); // a lost race surfaces here as "does not exist in storage"
+                }
+                pool.shutdown();
+                assertEquals(12, orders.count(all()));
+            }
+        }
+    }
+
+    @Test
     void mergeKeepsGlobalOrderAndPaging() {
         List<List<String>> lists = List.of(List.of("a", "d", "g"), List.of("b", "e"), List.of("c", "f", "h"));
         assertEquals(List.of("a", "b", "c", "d", "e", "f", "g", "h"), GridIndexClient.mergeSorted(lists, 0, Query.NO_LIMIT));

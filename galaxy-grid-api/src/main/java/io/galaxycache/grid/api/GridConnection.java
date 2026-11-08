@@ -206,7 +206,15 @@ public final class GridConnection implements AutoCloseable {
             return;
         }
         closed = true;
-        GalaxyException ex = new GalaxyException("connection to grid node " + member + " lost: " + e.getMessage(), e);
+        try {
+            socket.close();
+        } catch (IOException ignored) {
+            // already broken
+        }
+        // first tell the owner, so that callers woken below already see the grid as failed
+        String reason = "connection to grid node " + member.name() + " lost: " + e.getMessage();
+        onLost.accept(reason);
+        GalaxyException ex = new GridUnavailableException(reason);
         pending.values().forEach(p -> {
             p.future.completeExceptionally(ex);
             if (p.queue != null) {
@@ -214,14 +222,7 @@ public final class GridConnection implements AutoCloseable {
             }
         });
         pending.clear();
-        try {
-            socket.close();
-        } catch (IOException ignored) {
-            // already broken
-        }
-        onLost.accept("connection to grid node " + member.name() + " lost: " + e.getMessage());
     }
-
     @Override
     public void close() {
         closed = true;
