@@ -71,8 +71,7 @@ public final class GridClient implements AutoCloseable {
                     if (c != null && onConnectionLost != null) {
                         throw new GridUnavailableException("connection to grid node " + m.name() + " was lost");
                     }
-                    c = onConnectionLost == null ? new GridConnection(m, Math.min(timeoutMs, 5_000))
-                            : new GridConnection(m, Math.min(timeoutMs, 5_000), onConnectionLost);
+                    c = new GridConnection(m, topology.fingerprint(), Math.min(timeoutMs, 5_000), onConnectionLost);
                     pool[i] = c;
                 }
             }
@@ -158,8 +157,7 @@ public final class GridClient implements AutoCloseable {
             throw new GridUnavailableException(f);
         }
         java.util.concurrent.BlockingQueue<Object> q = new java.util.concurrent.ArrayBlockingQueue<>(4);
-        GridConnection c = onConnectionLost == null ? new GridConnection(m, Math.min(timeoutMs, 5_000))
-                : new GridConnection(m, Math.min(timeoutMs, 5_000), onConnectionLost);
+        GridConnection c = new GridConnection(m, topology.fingerprint(), Math.min(timeoutMs, 5_000), onConnectionLost);
         try {
             c.stream(op, body, q);
             while (true) {

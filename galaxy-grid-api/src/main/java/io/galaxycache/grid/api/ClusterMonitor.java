@@ -73,7 +73,7 @@ public final class ClusterMonitor implements AutoCloseable {
             problem = null;
             for (GridTopology.Member m : watched) {
                 try {
-                    NodeStatus s = ping(client, m, Math.max(500, heartbeatMs));
+                    NodeStatus s = ping(client, m, Math.max(1_000, heartbeatMs * 2));
                     if (!fingerprint.equals(s.fingerprint())) {
                         throw new GalaxyException("grid node " + m.name() + " runs a different grid configuration ("
                                 + s.fingerprint() + " vs " + fingerprint + "); all nodes and clients must use the same nodes/partitions");
@@ -123,7 +123,7 @@ public final class ClusterMonitor implements AutoCloseable {
         long now = System.currentTimeMillis();
         for (GridTopology.Member m : watched) {
             try {
-                NodeStatus s = ping(client, m, Math.max(500, heartbeatMs));
+                NodeStatus s = ping(client, m, Math.max(1_000, heartbeatMs * 2));
                 if (NodeStatus.FAILED.equals(s.state())) {
                     fail("grid node " + m.name() + " failed: " + s.reason());
                     return;

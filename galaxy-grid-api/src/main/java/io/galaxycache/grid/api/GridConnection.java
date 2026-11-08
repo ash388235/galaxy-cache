@@ -25,7 +25,7 @@ import java.util.concurrent.locks.ReentrantLock;
 public final class GridConnection implements AutoCloseable {
 
     private final GridTopology.Member member;
-    private final Socket socket;
+    private Socket socket;
     private final DataOutputStream out;
     private final DataInputStream in;
     private final ReentrantLock writeLock = new ReentrantLock();
@@ -80,14 +80,14 @@ public final class GridConnection implements AutoCloseable {
 
     private final java.util.function.Consumer<String> onLost;
 
-    public GridConnection(GridTopology.Member member, int connectTimeoutMs) {
-        this(member, connectTimeoutMs, reason -> { });
-    }
-
-    /** @param onLost called once if the connection breaks (not when {@link #close()} is called) */
-    public GridConnection(GridTopology.Member member, int connectTimeoutMs, java.util.function.Consumer<String> onLost) {
+    /**
+     * @param fingerprint the client's grid fingerprint; the node refuses the connection if it differs
+     * @param onLost      called once if the connection breaks (not when {@link #close()} is called)
+     */
+    public GridConnection(GridTopology.Member member, String fingerprint, int connectTimeoutMs,
+                          java.util.function.Consumer<String> onLost) {
         this.member = member;
-        this.onLost = onLost;
+        this.onLost = onLost == null ? reason -> { } : onLost;
         try {
             socket = new Socket();
             socket.setTcpNoDelay(true);
@@ -96,15 +96,27 @@ public final class GridConnection implements AutoCloseable {
             socket.connect(new InetSocketAddress(member.host(), member.port()), connectTimeoutMs);
             out = new DataOutputStream(new BufferedOutputStream(socket.getOutputStream(), 256 * 1024));
             in = new DataInputStream(new BufferedInputStream(socket.getInputStream(), 1024 * 1024));
-            out.writeInt(GridProtocol.MAGIC);
-            out.writeInt(GridProtocol.VERSION);
-            out.flush();
+            socket.setSoTimeout(connectTimeoutMs);
+            GridProtocol.clientHandshake(in, out, fingerprint, null, "grid node " + member);
+            socket.setSoTimeout(0);
+        } catch (GalaxyException e) {
+            closeQuietly();
+            throw e;
         } catch (IOException e) {
+            closeQuietly();
             throw new GalaxyException("Cannot connect to grid node " + member + ": " + e.getMessage(), e);
         }
         Thread reader = new Thread(this::readLoop, "galaxy-grid-reader-" + member.name());
         reader.setDaemon(true);
         reader.start();
+    }
+
+    private void closeQuietly() {
+        try {
+            socket.close();
+        } catch (IOException | RuntimeException ignored) {
+            // failed connect
+        }
     }
 
     public GridTopology.Member member() {

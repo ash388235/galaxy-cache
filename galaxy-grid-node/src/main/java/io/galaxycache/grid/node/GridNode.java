@@ -134,7 +134,8 @@ public final class GridNode implements AutoCloseable {
                     state = NodeStatus.READY;
                     monitor.start();
                     LOG.log(System.Logger.Level.INFO, "grid node {0} READY: all {1} nodes up", name, topology.members().size());
-                } catch (GalaxyException e) {
+                } catch (RuntimeException e) {
+                    // never let this thread die: a node stuck in FORMING would block the grid forever
                     if (e.getMessage() != null && e.getMessage().contains("different grid configuration")) {
                         failStop(e.getMessage());
                         return;
@@ -289,9 +290,15 @@ public final class GridNode implements AutoCloseable {
         try (s) {
             DataInputStream in = new DataInputStream(new BufferedInputStream(s.getInputStream(), 256 * 1024));
             DataOutputStream out = new DataOutputStream(new BufferedOutputStream(s.getOutputStream(), 1024 * 1024));
-            if (in.readInt() != GridProtocol.MAGIC || in.readInt() != GridProtocol.VERSION) {
-                return; // not a grid client
+            s.setSoTimeout(10_000);
+            String refused = GridProtocol.nodeHandshake(in, out, topology.fingerprint(), null);
+            if (refused != null) {
+                count("connectionsRefused", 1);
+                LOG.log(System.Logger.Level.WARNING, "grid node {0} refused a connection from {1}: {2}", name,
+                        s.getRemoteSocketAddress(), refused);
+                return;
             }
+            s.setSoTimeout(0);
             ReentrantLock writeLock = new ReentrantLock();
             while (running) {
                 GridProtocol.Frame req = GridProtocol.readFrame(in);

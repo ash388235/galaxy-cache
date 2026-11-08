@@ -54,6 +54,107 @@ public final class GridProtocol {
     private GridProtocol() {
     }
 
+    // ================================================================== handshake
+    //
+    //   client -> node : [MAGIC][VERSION]
+    //   node -> client : [MAGIC][VERSION][nonce: 16 bytes][node fingerprint: UTF][auth required: byte]
+    //   client -> node : [client fingerprint: UTF][proof length: int][proof]   proof = HMAC-SHA256(token, nonce)
+    //   node -> client : [status: int][message: UTF]                           status 0 = accepted
+    //
+    // Both sides compare fingerprints, so a node or client running with another grid configuration (other
+    // nodes, ports or partition count) is refused before any data moves.
+
+    public static final int HS_OK = 0;
+    public static final int HS_VERSION = 1;
+    public static final int HS_FINGERPRINT = 2;
+    public static final int HS_AUTH = 3;
+
+    /** Client side of the handshake; throws with the node's reason if refused. */
+    public static void clientHandshake(DataInputStream in, DataOutputStream out, String fingerprint, byte[] token,
+                                       String node) throws IOException {
+        out.writeInt(MAGIC);
+        out.writeInt(VERSION);
+        out.flush();
+        if (in.readInt() != MAGIC) {
+            throw new GalaxyException(node + " is not a Galaxy grid node");
+        }
+        int version = in.readInt();
+        if (version != VERSION) {
+            throw new GalaxyException(node + " speaks grid protocol v" + version + ", this client v" + VERSION);
+        }
+        byte[] nonce = new byte[16];
+        in.readFully(nonce);
+        String nodeFingerprint = in.readUTF();
+        boolean authRequired = in.readByte() != 0;
+        if (!nodeFingerprint.equals(fingerprint)) {
+            throw new GalaxyException(node + " runs a different grid configuration (" + nodeFingerprint + " vs "
+                    + fingerprint + "); all nodes and clients must use the same nodes/partitions");
+        }
+        if (authRequired && token == null) {
+            throw new GalaxyException(node + " requires authentication: set authToken for this grid");
+        }
+        byte[] proof = token == null ? new byte[0] : hmac(token, nonce);
+        out.writeUTF(fingerprint);
+        out.writeInt(proof.length);
+        out.write(proof);
+        out.flush();
+        int status = in.readInt();
+        String message = in.readUTF();
+        if (status != HS_OK) {
+            throw new GalaxyException(node + " refused the connection: " + message);
+        }
+    }
+
+    /** Node side of the handshake; returns null if accepted, otherwise the reason (already sent to the client). */
+    public static String nodeHandshake(DataInputStream in, DataOutputStream out, String fingerprint, byte[] token)
+            throws IOException {
+        if (in.readInt() != MAGIC) {
+            return "not a grid client";
+        }
+        int version = in.readInt();
+        byte[] nonce = new byte[16];
+        new java.security.SecureRandom().nextBytes(nonce);
+        out.writeInt(MAGIC);
+        out.writeInt(VERSION);
+        out.write(nonce);
+        out.writeUTF(fingerprint);
+        out.writeByte(token == null ? 0 : 1);
+        out.flush();
+        if (version != VERSION) {
+            return "client speaks protocol v" + version; // client gives up after reading our version
+        }
+        String clientFingerprint = in.readUTF();
+        int n = in.readInt();
+        if (n < 0 || n > 1024) {
+            return "bad handshake";
+        }
+        byte[] proof = new byte[n];
+        in.readFully(proof);
+        int status = HS_OK;
+        String message = "ok";
+        if (!fingerprint.equals(clientFingerprint)) {
+            status = HS_FINGERPRINT;
+            message = "different grid configuration (" + clientFingerprint + " vs " + fingerprint + ")";
+        } else if (token != null && !java.security.MessageDigest.isEqual(proof, hmac(token, nonce))) {
+            status = HS_AUTH;
+            message = "authentication failed";
+        }
+        out.writeInt(status);
+        out.writeUTF(message);
+        out.flush();
+        return status == HS_OK ? null : message;
+    }
+
+    static byte[] hmac(byte[] key, byte[] data) {
+        try {
+            javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+            mac.init(new javax.crypto.spec.SecretKeySpec(key, "HmacSHA256"));
+            return mac.doFinal(data);
+        } catch (java.security.GeneralSecurityException e) {
+            throw new GalaxyException("HMAC not available", e);
+        }
+    }
+
     public static void writeFrame(DataOutputStream out, long id, byte opOrStatus, byte[] body, int off, int len)
             throws IOException {
         out.writeInt(9 + len);

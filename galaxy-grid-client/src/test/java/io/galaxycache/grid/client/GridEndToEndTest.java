@@ -284,6 +284,20 @@ class GridEndToEndTest {
     }
 
     @Test
+    void connectionWithStaleConfigIsRefusedAtHandshake() {
+        awaitNodesReady();
+        Map<String, Object> other = new java.util.LinkedHashMap<>(config.storage("grid-1").settings());
+        other.put("partitions", 2048); // e.g. a client deployed with an old config
+        GridTopology stale = GridSettings.from(other).topology();
+        try (GridClient c = new GridClient(stale, 1, 5_000)) {
+            GalaxyException e = assertThrows(GalaxyException.class,
+                    () -> c.call(stale.members().get(0), GridProtocol.PING, new byte[0]));
+            assertTrue(e.getMessage().contains("different grid configuration"), e.getMessage());
+        }
+        assertTrue(nodes.get(0).nodeStatsForTest().counters().getOrDefault("node.connectionsRefused", 0L) >= 0);
+    }
+
+    @Test
     void clientWithDifferentTopologyIsRejected() {
         awaitNodesReady();
         Map<String, Object> other = new java.util.LinkedHashMap<>(config.storage("grid-1").settings());
