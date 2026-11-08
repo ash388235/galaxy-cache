@@ -387,8 +387,25 @@ public final class GridNode implements AutoCloseable {
                     r.last(new GridProtocol.Out(4).putInt(index.delete(d.dataset(), d.ids())).toBytes());
                 }
                 case GridProtocol.INDEX_QUERY -> {
+                    // ids stream back in frames of [count]{id}; the last frame ends with [total][tookMicros],
+                    // so a query matching millions of ids never needs one huge frame
                     Messages.QueryRequest q = Json.read(req.body(), Messages.QueryRequest.class);
-                    r.last(Json.writeBytes(index.query(q.dataset(), q.query())));
+                    Messages.QueryResponse res = index.query(q.dataset(), q.query());
+                    List<String> ids = res.ids();
+                    int from = 0;
+                    do {
+                        int to = Math.min(ids.size(), from + GridProtocol.IDS_PER_FRAME);
+                        GridProtocol.Out o = new GridProtocol.Out(16 + (to - from) * 20);
+                        o.putInt(to - from);
+                        ids.subList(from, to).forEach(o::putString);
+                        if (to == ids.size()) {
+                            o.putLong(res.total()).putLong(res.tookMicros());
+                            r.last(o.toBytes());
+                        } else {
+                            r.frame(GridProtocol.PART, o.array(), o.size());
+                        }
+                        from = to;
+                    } while (from < ids.size());
                 }
                 case GridProtocol.INDEX_DROP -> {
                     index.drop(Json.read(req.body(), Messages.DropRequest.class).dataset());

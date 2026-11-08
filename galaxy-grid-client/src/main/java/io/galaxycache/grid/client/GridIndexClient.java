@@ -16,6 +16,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.PriorityQueue;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * Index operations on a grid. Upserts and deletes go to each id's owner node; a query goes to every node in
@@ -38,17 +39,29 @@ public final class GridIndexClient implements IndexClient {
         for (IndexDocument d : docs) {
             byOwner.computeIfAbsent(grid.topology().ownerOf(d.id()), k -> new ArrayList<>()).add(d);
         }
-        Map<GridTopology.Member, byte[]> bodies = new LinkedHashMap<>();
-        byOwner.forEach((m, part) -> bodies.put(m, Json.writeBytes(new Messages.UpsertRequest(dataset, part))));
-        grid.callEach(bodies, GridProtocol.INDEX_UPSERT);
+        List<Map.Entry<GridTopology.Member, CompletableFuture<List<byte[]>>>> calls = new ArrayList<>();
+        byOwner.forEach((m, part) -> {
+            for (int i = 0; i < part.size(); i += DOCS_PER_REQUEST) {
+                calls.add(Map.entry(m, grid.send(m, GridProtocol.INDEX_UPSERT, Json.writeBytes(
+                        new Messages.UpsertRequest(dataset, part.subList(i, Math.min(part.size(), i + DOCS_PER_REQUEST)))))));
+            }
+        });
+        calls.forEach(c -> grid.await(c.getKey(), c.getValue()));
     }
+
+    /** Index documents per upsert request (keeps requests far below the frame limit). */
+    static final int DOCS_PER_REQUEST = 10_000;
 
     @Override
     public void delete(DatasetId dataset, Collection<String> ids) {
-        Map<GridTopology.Member, byte[]> bodies = new LinkedHashMap<>();
-        grid.topology().groupByOwner(ids).forEach((m, part) ->
-                bodies.put(m, Json.writeBytes(new Messages.DeleteRequest(dataset, part))));
-        grid.callEach(bodies, GridProtocol.INDEX_DELETE);
+        List<Map.Entry<GridTopology.Member, CompletableFuture<List<byte[]>>>> calls = new ArrayList<>();
+        grid.topology().groupByOwner(ids).forEach((m, part) -> {
+            for (int i = 0; i < part.size(); i += 50_000) {
+                calls.add(Map.entry(m, grid.send(m, GridProtocol.INDEX_DELETE, Json.writeBytes(
+                        new Messages.DeleteRequest(dataset, part.subList(i, Math.min(part.size(), i + 50_000)))))));
+            }
+        });
+        calls.forEach(c -> grid.await(c.getKey(), c.getValue()));
     }
 
     @Override
@@ -60,10 +73,19 @@ public final class GridIndexClient implements IndexClient {
         byte[] body = Json.writeBytes(new Messages.QueryRequest(dataset, perNode));
         List<List<String>> lists = new ArrayList<>();
         long total = 0;
-        for (List<byte[]> r : grid.callAll(GridProtocol.INDEX_QUERY, body).values()) {
-            Messages.QueryResponse qr = Json.read(r.get(0), Messages.QueryResponse.class);
-            lists.add(qr.ids());
-            total += qr.total();
+        for (List<byte[]> frames : grid.callAll(GridProtocol.INDEX_QUERY, body).values()) {
+            List<String> ids = new ArrayList<>();
+            for (int f = 0; f < frames.size(); f++) {
+                GridProtocol.In in = new GridProtocol.In(frames.get(f));
+                int n = in.getInt();
+                for (int i = 0; i < n; i++) {
+                    ids.add(in.getString());
+                }
+                if (f == frames.size() - 1) {
+                    total += in.getLong();
+                }
+            }
+            lists.add(ids);
         }
         List<String> merged = mergeSorted(lists, query.offset(), query.limit());
         return new Messages.QueryResponse(merged, total, (System.nanoTime() - t0) / 1000);

@@ -296,6 +296,64 @@ class GridEndToEndTest {
         }
     }
 
+    @GalaxyDomain(name = "Blob", version = 1, codec = "binary")
+    public static class Blob {
+        @GalaxyKey String id;
+        @Indexed int group;
+        byte[] data;
+
+        public Blob() {
+        }
+
+        Blob(int i, int size) {
+            id = String.format("B-%07d", i);
+            group = i % 10;
+            data = new byte[size];
+            data[0] = (byte) i;
+        }
+    }
+
+    @Test
+    void largeWritesAreSplitAndOversizedObjectsRefused() {
+        DatasetId ds = DatasetId.of("orders", "blob", "us", "2026-11-08");
+        try (GalaxyClient client = new GalaxyClient(config)) {
+            GalaxyCache<Blob> blobs = client.cache(ds, Blob.class);
+            List<Blob> big = new ArrayList<>();
+            for (int i = 0; i < 5_000; i++) {
+                big.add(new Blob(i, 40_000)); // ~200 MB in one putAll: ~67 MB per node, above the 64 MB frame limit
+            }
+            blobs.putAll(big);
+            big.clear();
+            assertEquals(5_000, blobs.stats().liveRecords());
+            assertEquals(500, blobs.count(eq("group", 3)));
+            assertEquals((byte) 4_321, blobs.get("B-0004321").orElseThrow().data[0]);
+            assertEquals(5_000, blobs.getAll(blobs.queryIds(Query.where(all()))).size());
+
+            GalaxyException e = assertThrows(GalaxyException.class, () -> blobs.put(new Blob(9_999_999, 70 * 1024 * 1024)));
+            assertTrue(e.getMessage().contains("grid limit"), e.getMessage());
+            assertEquals(5_000, blobs.count(all())); // nothing broke: the grid is still serving
+        }
+    }
+
+    @Test
+    void queriesMatchingManyIdsStreamInParts() {
+        DatasetId ds = DatasetId.of("orders", "many", "us", "2026-11-08");
+        try (GalaxyClient client = new GalaxyClient(config)) {
+            GalaxyCache<Blob> blobs = client.cache(ds, Blob.class);
+            List<Blob> small = new ArrayList<>();
+            for (int i = 0; i < 130_000; i++) {
+                small.add(new Blob(i, 4)); // > 2 id frames per node
+            }
+            blobs.putAll(small);
+            List<String> ids = blobs.queryIds(Query.where(all()));
+            assertEquals(130_000, ids.size());
+            assertEquals("B-0000000", ids.get(0));
+            assertEquals("B-0129999", ids.get(129_999));
+            assertEquals(13_000, blobs.count(eq("group", 7)));
+            assertEquals(List.of("B-0100000", "B-0100001"), blobs.queryIds(Query.where(all()).offset(100_000).limit(2)));
+        }
+    }
+
     @Test
     void mergeKeepsGlobalOrderAndPaging() {
         List<List<String>> lists = List.of(List.of("a", "d", "g"), List.of("b", "e"), List.of("c", "f", "h"));

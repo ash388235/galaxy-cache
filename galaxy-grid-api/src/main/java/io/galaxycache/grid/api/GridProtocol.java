@@ -24,6 +24,8 @@ public final class GridProtocol {
     public static final int MAGIC = 0x47414C58; // "GALX", sent once by the client after connecting
     public static final int VERSION = 1;
     public static final int MAX_FRAME = 64 * 1024 * 1024;
+    /** Ids per frame of a streamed INDEX_QUERY answer. */
+    public static final int IDS_PER_FRAME = 50_000;
     /** Nodes cut streamed responses into frames of about this size. */
     public static final int STREAM_FRAME_BYTES = 4 * 1024 * 1024;
 
@@ -106,6 +108,11 @@ public final class GridProtocol {
             return this;
         }
 
+        public Out putLong(long v) {
+            putInt((int) (v >>> 32));
+            return putInt((int) v);
+        }
+
         public Out putBytes(byte[] b) {
             putInt(b.length);
             ensure(b.length);
@@ -153,6 +160,10 @@ public final class GridProtocol {
 
         public int getInt() {
             return b.getInt();
+        }
+
+        public long getLong() {
+            return b.getLong();
         }
 
         public byte[] getBytes() {

@@ -33,9 +33,21 @@ public final class GridDataStore implements DataStore, IndexingStore {
     private final GridClient grid;
     private final GridIndexClient indexClient;
 
+    /** Ids per GET_ALL / DELETE request to one node; bigger lists are split. */
+    static final int IDS_PER_REQUEST = 50_000;
+    /** Largest record payload the grid accepts (it must fit in one protocol frame with room to spare). */
+    public static final int MAX_RECORD_BYTES = GridProtocol.MAX_FRAME - 1024 * 1024;
+
+    private final int maxBatchBytes;
+
     public GridDataStore(String name, GridClient grid) {
+        this(name, grid, 16 * 1024 * 1024);
+    }
+
+    public GridDataStore(String name, GridClient grid, int maxBatchBytes) {
         this.name = name;
         this.grid = grid;
+        this.maxBatchBytes = Math.max(64 * 1024, Math.min(maxBatchBytes, GridProtocol.MAX_FRAME / 2));
         this.indexClient = new GridIndexClient(name, grid);
     }
 
@@ -75,15 +87,54 @@ public final class GridDataStore implements DataStore, IndexingStore {
         putAll(dataset, List.of(record));
     }
 
+    /**
+     * Groups records by owner and sends each node requests of at most {@code maxBatchBytes}, all in parallel.
+     * A record that could never fit in a frame is refused before anything is sent.
+     */
     @Override
     public void putAll(DatasetId dataset, List<StoredRecord> records) {
         Map<GridTopology.Member, List<StoredRecord>> byOwner = new LinkedHashMap<>();
         for (StoredRecord r : records) {
+            if (r.payload().length > MAX_RECORD_BYTES) {
+                throw new io.galaxycache.common.GalaxyException("record " + r.id() + " is " + r.payload().length
+                        + " bytes; the grid limit is " + MAX_RECORD_BYTES + " bytes per object");
+            }
             byOwner.computeIfAbsent(grid.topology().ownerOf(r.id()), k -> new ArrayList<>()).add(r);
         }
-        Map<GridTopology.Member, byte[]> bodies = new LinkedHashMap<>();
-        byOwner.forEach((m, recs) -> bodies.put(m, GridRecords.records(dataset.key(), recs)));
-        grid.callEach(bodies, GridProtocol.PUT_RECORDS);
+        List<Map.Entry<GridTopology.Member, java.util.concurrent.CompletableFuture<List<byte[]>>>> calls = new ArrayList<>();
+        byOwner.forEach((m, recs) -> {
+            int from = 0;
+            while (from < recs.size()) {
+                long bytes = 0;
+                int to = from;
+                while (to < recs.size() && (to == from || bytes + size(recs.get(to)) <= maxBatchBytes)) {
+                    bytes += size(recs.get(to));
+                    to++;
+                }
+                calls.add(Map.entry(m, grid.send(m, GridProtocol.PUT_RECORDS,
+                        GridRecords.records(dataset.key(), recs.subList(from, to)))));
+                from = to;
+            }
+        });
+        calls.forEach(c -> grid.await(c.getKey(), c.getValue()));
+    }
+
+    private static long size(StoredRecord r) {
+        return r.payload().length + r.id().length() * 3L + 16;
+    }
+
+    /** Ids grouped by owner and cut into requests of at most {@link #IDS_PER_REQUEST}, sent in parallel. */
+    private List<List<byte[]>> idRequests(DatasetId dataset, Collection<String> ids, byte op) {
+        List<Map.Entry<GridTopology.Member, java.util.concurrent.CompletableFuture<List<byte[]>>>> calls = new ArrayList<>();
+        grid.topology().groupByOwner(ids).forEach((m, part) -> {
+            for (int i = 0; i < part.size(); i += IDS_PER_REQUEST) {
+                calls.add(Map.entry(m, grid.send(m, op, GridRecords.ids(dataset.key(),
+                        part.subList(i, Math.min(part.size(), i + IDS_PER_REQUEST))))));
+            }
+        });
+        List<List<byte[]>> out = new ArrayList<>(calls.size());
+        calls.forEach(c -> out.add(grid.await(c.getKey(), c.getValue())));
+        return out;
     }
 
     @Override
@@ -93,10 +144,8 @@ public final class GridDataStore implements DataStore, IndexingStore {
 
     @Override
     public Map<String, StoredRecord> getAll(DatasetId dataset, Collection<String> ids) {
-        Map<GridTopology.Member, byte[]> bodies = new LinkedHashMap<>();
-        grid.topology().groupByOwner(ids).forEach((m, part) -> bodies.put(m, GridRecords.ids(dataset.key(), part)));
         Map<String, StoredRecord> out = new HashMap<>(ids.size() * 2);
-        grid.callEach(bodies, GridProtocol.GET_ALL).values()
+        idRequests(dataset, ids, GridProtocol.GET_ALL)
                 .forEach(frames -> frames.forEach(f -> GridRecords.readRecordFrame(f, r -> out.put(r.id(), r))));
         return out;
     }
@@ -108,10 +157,8 @@ public final class GridDataStore implements DataStore, IndexingStore {
 
     @Override
     public int deleteAll(DatasetId dataset, Collection<String> ids) {
-        Map<GridTopology.Member, byte[]> bodies = new LinkedHashMap<>();
-        grid.topology().groupByOwner(ids).forEach((m, part) -> bodies.put(m, GridRecords.ids(dataset.key(), part)));
         int n = 0;
-        for (List<byte[]> r : grid.callEach(bodies, GridProtocol.DELETE_RECORDS).values()) {
+        for (List<byte[]> r : idRequests(dataset, ids, GridProtocol.DELETE_RECORDS)) {
             n += new GridProtocol.In(r.get(0)).getInt();
         }
         return n;

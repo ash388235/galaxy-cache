@@ -19,6 +19,7 @@ public final class GridStorageProvider implements StorageProvider {
 
     @Override
     public DataStore open(String name, Map<String, Object> settings) {
-        return new GridDataStore(name, GridClients.acquire(name, settings));
+        return new GridDataStore(name, GridClients.acquire(name, settings),
+                (int) io.galaxycache.grid.api.GridSettings.num(settings, "maxBatchBytes", 16L * 1024 * 1024));
     }
 }
