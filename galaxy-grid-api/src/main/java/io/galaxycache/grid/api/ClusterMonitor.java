@@ -84,8 +84,8 @@ public final class ClusterMonitor implements AutoCloseable {
                     }
                     ids.put(m.name(), s.startupId());
                 } catch (GalaxyException e) {
-                    if (e.getMessage() != null && e.getMessage().contains("different grid configuration")) {
-                        throw e;
+                    if (isPermanent(e)) {
+                        throw e; // waiting cannot help
                     }
                     problem = m.name() + " unreachable: " + e.getMessage();
                     break;
@@ -103,6 +103,13 @@ public final class ClusterMonitor implements AutoCloseable {
             }
             sleep(Math.min(500, heartbeatMs));
         }
+    }
+
+    /** A refusal that retrying cannot fix: wrong grid configuration or wrong authentication token. */
+    public static boolean isPermanent(RuntimeException e) {
+        String m = e.getMessage();
+        return m != null && (m.contains("different grid configuration") || m.contains("refused the connection")
+                || m.contains("requires authentication"));
     }
 
     /** Starts the heartbeat; call after {@link #awaitFormed}. */

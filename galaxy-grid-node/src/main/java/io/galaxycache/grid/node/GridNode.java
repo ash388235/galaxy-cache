@@ -142,6 +142,13 @@ public final class GridNode implements AutoCloseable {
                         return;
                     }
                     LOG.log(System.Logger.Level.INFO, "grid node {0} waiting for peers: {1}", name, e.getMessage());
+                    if (ClusterMonitor.isPermanent(e)) {
+                        try {
+                            Thread.sleep(5_000); // e.g. a peer with another token: keep waiting, but do not spin
+                        } catch (InterruptedException ie) {
+                            return;
+                        }
+                    }
                 }
             }
         }, "galaxy-grid-form-" + name);
@@ -623,6 +630,8 @@ public final class GridNode implements AutoCloseable {
             } catch (RuntimeException ignored) {
                 // connection gone
             }
+        } catch (Error e) { // out of memory and the like: this node can no longer be trusted
+            failStop("fatal error: " + e);
         }
     }
 

@@ -10,7 +10,7 @@ $Jar = Join-Path $Root "galaxy-grid-node\target\galaxy-grid-node.jar"
 New-Item -ItemType Directory -Force -Path $Run | Out-Null
 $Started = @()
 foreach ($n in $Nodes) {
-    $p = Start-Process -FilePath "java" -ArgumentList @("-Xmx$Heap", '"-Djava.util.logging.SimpleFormatter.format=%1$tFT%1$tT.%1$tL %4$s %3$s %5$s%6$s%n"', "-jar", $Jar, "--config", $Config, "--grid", $Grid, "--node", $n) `
+    $p = Start-Process -FilePath "java" -ArgumentList @("-Xmx$Heap", "-XX:+ExitOnOutOfMemoryError", '"-Djava.util.logging.SimpleFormatter.format=%1$tFT%1$tT.%1$tL %4$s %3$s %5$s%6$s%n"', "-jar", $Jar, "--config", $Config, "--grid", $Grid, "--node", $n) `
         -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $Run "$n.log") -RedirectStandardError (Join-Path $Run "$n.err.log")
     $Started += $p
     Set-Content -Path (Join-Path $Run "$n.pid") -Value $p.Id

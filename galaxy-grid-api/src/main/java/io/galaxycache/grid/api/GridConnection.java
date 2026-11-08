@@ -196,6 +196,8 @@ public final class GridConnection implements AutoCloseable {
             }
         } catch (IOException e) {
             fail(e);
+        } catch (Throwable t) { // e.g. OutOfMemoryError: without a reader every waiting call would hang until its timeout
+            fail(new IOException("reader thread died: " + t, t));
         }
     }
 
