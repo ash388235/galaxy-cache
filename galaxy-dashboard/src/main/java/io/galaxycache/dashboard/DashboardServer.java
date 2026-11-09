@@ -122,6 +122,9 @@ public final class DashboardServer implements AutoCloseable {
         }
     }
 
+    record ClientStats(String client, int operations, long objectsWritten, long objectsRead, int errors, String lastSeen) {
+    }
+
     record ScopeOption(String namespace, List<String> datasets) {
     }
 
@@ -299,11 +302,23 @@ public final class DashboardServer implements AutoCloseable {
                 .sorted(Comparator.comparingDouble(QueryLogEntry::totalMs).reversed()).limit(10).toList();
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("operations", ops);
+        Map<String, List<QueryLogEntry>> byClient = new TreeMap<>();
+        all.forEach(e -> byClient.computeIfAbsent(String.valueOf(e.client()), k -> new ArrayList<>()).add(e));
+        List<ClientStats> clients = new ArrayList<>();
+        byClient.forEach((client, list) -> clients.add(new ClientStats(client, list.size(),
+                objects(list, e -> e.op().startsWith("PUT")),
+                objects(list, e -> e.op().startsWith("GET") || e.op().equals("QUERY")),
+                (int) list.stream().filter(e -> !e.ok()).count(), list.get(list.size() - 1).ts())));
+        out.put("clients", clients);
         out.put("slowestQueries", slowest);
         return out;
     }
 
     // ------------------------------------------------------------------ helpers
+
+    private static long objects(List<QueryLogEntry> list, java.util.function.Predicate<QueryLogEntry> which) {
+        return list.stream().filter(which).filter(e -> e.records() != null).mapToLong(QueryLogEntry::records).sum();
+    }
 
     /** Objects returned per second of operation time (meaningful for GET, GET_ALL and QUERY). */
     private static double recordsPerSec(List<QueryLogEntry> list) {

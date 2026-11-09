@@ -42,7 +42,7 @@ Needs Java 21 and Maven 3.9.
 ./scripts/stop-all.sh
 ```
 
-On Windows: `powershell -ExecutionPolicy Bypass -File scripts\start-local.ps1` (stop with `scripts\stop-local.ps1`).
+On Windows: `powershell -ExecutionPolicy Bypass -File scripts\start-local.ps1` (stop with `scripts\stop-local.ps1`). For a demo on the 3-node grid with two writer processes, a reader that waits for them, and the dashboard, run `scripts\run-grid-demo.ps1`.
 
 Single JVM instead: `./scripts/run-demo.sh --embedded --keep-running` starts both pods and the dashboard inside the demo.
 

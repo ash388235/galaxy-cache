@@ -81,6 +81,11 @@
   </section>
 
   <section>
+    <h2>Clients</h2>
+    <div class="scroll" id="clients"></div>
+  </section>
+
+  <section>
     <h2>Recent operations
       <select id="opFilter"><option value="">all operations</option></select></h2>
     <div class="scroll" id="queries"></div>
@@ -164,6 +169,11 @@ async function refresh() {
     $('tiles').innerHTML = tiles.map(([l, v]) => `<div class="tile"><div class="label">${l}</div><div class="value">${v}</div></div>`).join('');
 
     $('latency').innerHTML = latencyChart(stats.operations);
+    $('clients').innerHTML = table([
+      {h: 'Client', f: r => esc(r.client)}, {h: 'Operations', num: 1, f: r => num(r.operations)},
+      {h: 'Objects written', num: 1, f: r => num(r.objectsWritten)}, {h: 'Objects read', num: 1, f: r => num(r.objectsRead)},
+      {h: 'Errors', num: 1, f: r => r.errors ? `<span class="err">${num(r.errors)}</span>` : '0'}, {h: 'Last seen', f: r => time(r.lastSeen)}],
+      stats.clients, 'No clients in this view yet.');
     $('ops').innerHTML = table([
       {h: 'Operation', f: r => esc(r.op)}, {h: 'Calls', num: 1, f: r => num(r.count)},
       {h: 'Avg ms', num: 1, f: r => ms(r.avgMs)}, {h: 'p50 ms', num: 1, f: r => ms(r.p50Ms)},

@@ -30,7 +30,7 @@ final class QueryLogger implements AutoCloseable {
         } catch (IOException e) {
             host = "localhost";
         }
-        this.clientName = host + ":" + ProcessHandle.current().pid();
+        this.clientName = System.getProperty("galaxy.client.name", host + ":" + ProcessHandle.current().pid());
         this.toSystemLogger = toSystemLogger;
         BufferedWriter w = null;
         if (queryLogDir != null) {
