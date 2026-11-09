@@ -239,6 +239,7 @@ class GridEndToEndTest {
                 }
             }
             assertNotNull(e, "client kept working after a node died");
+            assertFalse(e.getMessage().endsWith("null"), e.getMessage()); // the reason must say something useful
             // every later call fails at once, even for keys owned by live nodes
             for (int i = 0; i < 20; i++) {
                 String key = String.format("ORD-%06d", i);

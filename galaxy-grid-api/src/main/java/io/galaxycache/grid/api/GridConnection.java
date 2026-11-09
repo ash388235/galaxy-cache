@@ -212,7 +212,9 @@ public final class GridConnection implements AutoCloseable {
             // already broken
         }
         // first tell the owner, so that callers woken below already see the grid as failed
-        String reason = "connection to grid node " + member.name() + " lost: " + e.getMessage();
+        String why = e instanceof java.io.EOFException ? "the node closed the connection"
+                : e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+        String reason = "connection to grid node " + member.name() + " lost: " + why;
         onLost.accept(reason);
         GalaxyException ex = new GridUnavailableException(reason);
         pending.values().forEach(p -> {

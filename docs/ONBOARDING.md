@@ -5,16 +5,17 @@ are also in [RUNBOOK.md](RUNBOOK.md); the security model and open findings are i
 
 ## What has and has not been tested
 
-**Galaxy has never been run on Linux.** All testing so far was on one Windows 11 laptop. Every step below carries one of
-these marks:
+The Linux testing was on **Ubuntu 24.04 with 3 hosts as systemd containers on one machine**. Real separate machines, a real
+network and the firewall rules have **not** been tested, and no speed has been measured on Linux. Every step carries one of these marks:
 
 | Mark | Meaning |
 |---|---|
+| **[Linux-tested]** | Run on Ubuntu 24.04, with 3 hosts as systemd containers on one machine |
 | **[Windows-tested]** | The behaviour was exercised on Windows. It does not depend on the operating system, but has not been repeated on Linux |
 | **[Git Bash only]** | The script ran successfully under Git Bash on Windows against a real local grid. Not run on Linux |
 | **[Untested]** | Not run anywhere: written from the documentation of the tool involved. Check it carefully the first time |
 
-Run section 16 (acceptance checks) on the first Linux deployment before relying on it.
+All 93 automated tests also pass on Ubuntu 24.04. Run section 16 (acceptance checks) on your first deployment on real machines before relying on it.
 
 ## Contents
 
@@ -80,7 +81,7 @@ Use fast local disks (SSD or NVMe). Leave memory free for the operating system's
 | 8080 | Dashboard | Operators, through an ssh tunnel | **None** |
 | 7070, 7071 | Index pods (only for namespaces not on the grid) | Clients | **None** |
 
-**Firewall example** on each grid host, with `firewalld` **[Untested]**. Replace the source range with your own:
+**Firewall example** on each grid host, with `firewalld` **[Untested]** (no firewall was part of the Linux test). Replace the source range with your own:
 
 ```bash
 sudo firewall-cmd --permanent --new-zone=galaxy
@@ -92,7 +93,7 @@ sudo firewall-cmd --reload
 
 ## 3. Build and package
 
-On a build machine with JDK 21 and Maven **[Untested]** on Linux; the Maven build itself is **[Windows-tested]**:
+On a build machine with JDK 21 and Maven **[Linux-tested]**:
 
 ```bash
 git clone https://github.com/ash388235/galaxy-cache.git
@@ -111,7 +112,7 @@ scripts/build.sh
 | `galaxy-examples/target/galaxy-examples.jar` | Maintenance tools and demos |
 | `galaxy-index-server/target/galaxy-index-server.jar` | Index pods (only if you use namespaces outside the grid) |
 
-Package a release for the hosts **[Untested]**:
+Package a release for the hosts **[Linux-tested]**:
 
 ```bash
 mkdir -p dist/lib
@@ -123,7 +124,7 @@ tar czf galaxy-release.tar.gz -C dist .
 
 ## 4. Try it on one machine first
 
-**[Git Bash only]** A single-host grid is the quickest way to see everything working. From the repository root:
+**[Linux-tested]** A single-host grid is the quickest way to see everything working. From the repository root:
 
 ```bash
 scripts/start-grid.sh
@@ -262,7 +263,7 @@ persistence is configured, so call `cache.reindex()` after restarting one.
 
 ## 7. Generate the token and certificates
 
-**[Git Bash only]** Do this once on a trusted machine. Use the exact host names from `nodes`:
+**[Linux-tested]** Do this once on a trusted machine. Use the exact host names from `nodes`:
 
 ```bash
 scripts/generate-grid-secrets.sh ./grid-secrets node-1=grid1.example.com node-2=grid2.example.com node-3=grid3.example.com
@@ -280,7 +281,7 @@ Never commit these files. `.gitignore` excludes them, but treat that as a backst
 
 ## 8. Deploy 3 nodes on separate hosts
 
-**[Untested]** All of these steps. Run steps 1–6 on each of the three hosts.
+**[Linux-tested]** All of these steps, followed exactly, on 3 hosts as systemd containers on one machine. Not yet done on real separate machines. Run steps 1–6 on each of the three hosts.
 
 **Step 1. Create the user and folders.**
 
@@ -346,7 +347,7 @@ Each line should show `READY` and `http=200`. If one stays `FORMING`, see sectio
 
 ## 9. Start, stop and restart
 
-**[Untested]** The `systemctl` and `grid-cluster.sh` commands. The fail-stop behaviour they rely on is **[Windows-tested]**.
+**[Linux-tested]** The `systemctl` and `grid-cluster.sh` commands over ssh, and fail-stop: killing one node stopped the others (exit status 2) in 4.9 s and the client exited with status 75.
 
 Set this on the admin machine:
 
@@ -382,11 +383,11 @@ That is why `Restart=no` is set: a node that restarted on its own could not rejo
 
 Exit statuses: a node that stopped because of a peer exits with **2**; a client with `onFailure: exit` exits with **75**.
 
-On one machine **[Git Bash only]**: `scripts/start-grid.sh`, `scripts/stop-grid.sh`, `scripts/restart-grid.sh`, `scripts/grid-status.sh`.
+On one machine **[Linux-tested]**: `scripts/start-grid.sh`, `scripts/stop-grid.sh`, `scripts/restart-grid.sh`, `scripts/grid-status.sh`.
 
 ## 10. Health and metrics
 
-**[Windows-tested]** The endpoints. On each node's admin port:
+**[Linux-tested]** The endpoints. On each node's admin port, on the node's own address (not `localhost` when the node is bound to its host address):
 
 | Endpoint | Result |
 |---|---|
@@ -406,7 +407,7 @@ Alert rules are listed in [RUNBOOK.md](RUNBOOK.md#check-health). Add the admin p
 
 ## 11. Dashboard
 
-**[Windows-tested]** The dashboard. The service file is **[Untested]**. Run it on one host that can reach the node admin ports:
+**[Linux-tested]** The dashboard service on 127.0.0.1. Run it on one host that can reach the node admin ports:
 
 ```bash
 sudo cp /opt/galaxy/deploy/galaxy-dashboard.service /etc/systemd/system/
@@ -464,7 +465,7 @@ Queries are limited to 8 levels, 256 conditions, 4 NOTs and 10,000 values.
 
 ## 13. Maintenance tools
 
-**[Git Bash only]** `grid-admin.sh`. **[Windows-tested]** the tools themselves. Run them with no clients writing, from a machine that has the config and the token
+**[Linux-tested]** `grid-admin.sh` compact and rebalance. **[Windows-tested]** `DatasetMigration` and changing the node list. Run them with no clients writing, from a machine that has the config and the token
 in its environment. Copy `galaxy-examples.jar` there and set `GALAXY_TOOLS_JAR` if it is not in `galaxy-examples/target`.
 
 | Job | When | Command |
@@ -514,7 +515,7 @@ Changing a domain class is a data migration, not an upgrade: see the README.
 
 ## 15. Backing up data
 
-**[Untested]** The grid has no backup tool and keeps only one copy, so backups are how you protect the data. Back up with the grid stopped:
+**[Linux-tested]** Backup and restore as below returned identical counts. The grid has no backup tool and keeps only one copy, so backups are how you protect the data. Back up with the grid stopped:
 a copy of a running node is not supported.
 
 ```bash
@@ -533,7 +534,7 @@ somewhere safe. If the data can be reloaded from an upstream system, that reload
 
 ## 16. Acceptance checks for a new deployment
 
-**[Untested]** on Linux. Run these on the first deployment, on a test dataset, before putting real data on it.
+**[Linux-tested]** Checks 1–6, on Ubuntu 24.04 with 3 hosts as systemd containers on one machine (the crash test left 414 in-flight keys and 0 violations). Repeat them on real machines, on a test dataset, before putting real data on it.
 
 1. `scripts/grid-cluster.sh status`: every node `READY`.
 2. From a client host, write and read back data with `GridSoak`:
@@ -567,6 +568,7 @@ somewhere safe. If the data can be reloaded from an upstream system, that reload
 | `Cannot connect to grid node` with a certificate error | Certificate expired or does not match the host in `nodes` | Reissue with section 7 |
 | `grid not ready after … ms` on a client | Not all nodes are READY | Start the grid; raise `startupWaitMs` if it needs longer |
 | `speaks grid protocol v…` | Mixed versions | Upgrade nodes and clients together |
+| Client waits for `startupWaitMs` (60 s), then fails with `is not a Galaxy grid node` | The client's `tls` setting differs from the nodes' | Use the same `tls` setting on nodes and clients |
 | `FAIL-STOP` in a node log, node exited with status 2 | A peer was lost, restarted or misconfigured | Section 9. The line names the peer |
 | Client exits with status 75 | The grid failed and `onFailure: exit` is set | Restart the grid, then the client |
 | `Terminating due to java.lang.OutOfMemoryError` on a node | Heap too small for the index or load | Raise `GALAXY_HEAP`. The whole grid will have stopped |

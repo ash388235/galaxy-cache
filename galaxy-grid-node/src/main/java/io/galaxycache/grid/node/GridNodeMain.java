@@ -39,8 +39,8 @@ public final class GridNodeMain {
         }
         GridNode n = start(GalaxyConfig.load(Path.of(configPath)), grid, node);
         Runtime.getRuntime().addShutdownHook(new Thread(n::close));
-        System.out.printf("grid node %s of %s on port %d (stats: http://localhost:%d/v1/stats)%n", node, grid,
-                n.port(), n.port() + adminOffset(GalaxyConfig.load(Path.of(configPath)).storage(grid).settings()));
+        System.out.printf("grid node %s of %s on port %d (stats: http://%s:%d/v1/stats)%n", node, grid,
+                n.port(), n.boundAddress(), n.port() + adminOffset(GalaxyConfig.load(Path.of(configPath)).storage(grid).settings()));
         Thread.currentThread().join();
     }
 

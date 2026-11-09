@@ -1,7 +1,7 @@
 # Galaxy Cache security testing
 
-Threat model, findings and a repeatable test plan. All tests so far ran on one Windows laptop against nodes on
-localhost. Nothing here has been tested over a real network or by an independent reviewer.
+Threat model, findings and a repeatable test plan. The automated tests pass on Windows and on Ubuntu 24.04, against nodes on one
+machine. Nothing here has been tested over a real network or by an independent reviewer.
 
 ## What needs protecting
 
