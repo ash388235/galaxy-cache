@@ -3,3 +3,19 @@ galaxy-data/
 *.iml
 .idea/
 .vscode/
+
+# never commit data, logs or secrets
+logs/
+*.log
+*.gdat
+*.bin
+*.jks
+*.p12
+*.pfx
+*.pem
+*.key
+*.keystore
+*.crt
+*.cer
+.env
+.env.*
