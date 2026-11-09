@@ -1,0 +1,16 @@
+# Dashboard. Install as /etc/systemd/system/galaxy-dashboard.service.
+# It has no login and listens on 127.0.0.1: reach it with an ssh tunnel (see docs/ONBOARDING.md).
+[Unit]
+Description=Galaxy Cache dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=galaxy
+EnvironmentFile=-/etc/galaxy/grid.env
+ExecStart=/usr/bin/env java -Xmx2g -jar /opt/galaxy/lib/galaxy-dashboard.jar --config /etc/galaxy/galaxy.yaml --port 8080
+Restart=on-failure
+SuccessExitStatus=143
+
+[Install]
+WantedBy=multi-user.target

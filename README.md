@@ -29,6 +29,8 @@ Design doc: see the project's "Galaxy Cache: Design and Build Plan".
 
 Third-party dependencies: Jackson (JSON/YAML) and JUnit 5 only.
 
+New here? [docs/ONBOARDING.md](docs/ONBOARDING.md) covers deploying and running a grid on Unix hosts; [docs/RUNBOOK.md](docs/RUNBOOK.md) covers day-to-day operations.
+
 ## Run it locally
 
 Needs Java 21 and Maven 3.9.

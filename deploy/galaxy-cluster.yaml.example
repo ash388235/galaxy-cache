@@ -1,0 +1,46 @@
+# Three grid nodes on separate hosts. Copy to /etc/galaxy/galaxy.yaml on every node and client host.
+# Change the host names. nodes and partitions must be identical everywhere: nodes and clients refuse each other otherwise.
+# On client hosts delete the tlsKeyStore and tlsKeyStorePassword lines: clients only need the truststore.
+# Full reference: docs/ONBOARDING.md
+cluster: prod-grid
+
+catalog:
+  path: /var/lib/galaxy/catalog
+
+storages:
+  grid-1:
+    type: grid
+    path: /var/lib/galaxy/grid        # each node uses path/<node> and path/<node>-index
+    nodes:
+      node-1: "grid1.example.com:7101"
+      node-2: "grid2.example.com:7101"
+      node-3: "grid3.example.com:7101"
+    partitions: 1024
+    pageSize: 1048576                 # choose before loading data; it cannot be changed afterwards
+    segmentSize: 67108864
+    fsync: true
+    authToken: "${env:GALAXY_GRID_TOKEN}"
+    tls: true
+    tlsKeyStore: /etc/galaxy/tls/node.p12
+    tlsKeyStorePassword: "${env:GALAXY_TLS_PASSWORD}"
+    tlsTrustStore: /etc/galaxy/tls/truststore.p12
+    tlsTrustStorePassword: "${env:GALAXY_TLS_PASSWORD}"
+    connectionsPerNode: 4
+    heartbeatMs: 1000
+    failAfterMs: 5000
+    startupWaitMs: 60000
+    onFailure: exit                   # client processes exit with status 75 when the grid fails
+
+indexNodes:
+  grid-1:
+    url: http://grid1.example.com:7201   # a node's admin port: gives the dashboard stats for the whole grid
+
+namespaces:
+  grid: { storage: grid-1, indexNode: grid-1 }
+
+client:
+  readParallelism: 32
+  readBatchSize: 512
+
+logging:
+  queryLogDir: /var/log/galaxy/query     # the dashboard reads this folder: use shared storage to see every client

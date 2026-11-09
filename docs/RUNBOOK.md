@@ -130,8 +130,8 @@ restart time at 5M objects, and 3 separate machines on a real network.
 
 ## Known limits
 
-- The Linux script, systemd unit and Dockerfile in `scripts/` and `deploy/` have not been run yet; this project has only
-  been run on Windows so far.
+- The Unix scripts have only been run under Git Bash on Windows, and the systemd units and Dockerfile have not been run at all;
+  this project has never run on Linux. See `docs/ONBOARDING.md`.
 
 - One copy of the data; no backups, failover or online node changes.
 - Writers wait during compaction, and client requests can time out (`timeoutMs`), so run it with no clients writing.
