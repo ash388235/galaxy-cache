@@ -1,0 +1,288 @@
+<title>Galaxy Cache Architecture</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+/* Layout: one slide-shaped sheet. Header line, one wide diagram, then a five-column key of flows. */
+:root {
+  --bg: #f3f5f8;
+  --sheet: #ffffff;
+  --fg: #172030;
+  --muted: #5b6678;
+  --line: #c9d0db;
+  --grid: #1f6f8b;      /* grid tier */
+  --grid-tint: #e3f0f5;
+  --direct: #a8621a;    /* direct mode */
+  --direct-tint: #f8eddf;
+  --mon: #6a4fb0;       /* monitoring */
+  --mon-tint: #eee9f8;
+  --fail: #c2362f;
+  --inner: #f6f8fb;
+  --sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0e131b; --sheet: #151c27; --fg: #e4e9f1; --muted: #9aa5b6; --line: #34404f;
+  --grid: #5db4d3; --grid-tint: #16303b; --direct: #e0a35e; --direct-tint: #33261a;
+  --mon: #a993e6; --mon-tint: #261f3b; --fail: #ef6b62; --inner: #1b2431; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #0e131b; --sheet: #151c27; --fg: #e4e9f1; --muted: #9aa5b6; --line: #34404f;
+  --grid: #5db4d3; --grid-tint: #16303b; --direct: #e0a35e; --direct-tint: #33261a;
+  --mon: #a993e6; --mon-tint: #261f3b; --fail: #ef6b62; --inner: #1b2431; color-scheme: dark }
+
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); }
+.wrap { max-width: 1280px; margin: 0 auto; padding-block: 24px 32px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+.sheet { background: var(--sheet); border: 1px solid var(--line); border-radius: 6px; padding: 24px 28px 22px; display: grid; gap: 14px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 24px; }
+h1 { margin: 0; font-size: 26px; font-weight: 700; letter-spacing: -0.01em; text-wrap: balance; }
+.sub { color: var(--muted); font-size: 14px; margin: 4px 0 0; max-width: 72ch; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag { font-family: var(--mono); font-size: 12px; padding: 3px 8px; border-radius: 3px; border: 1px solid var(--line); color: var(--muted); }
+.tag.f { color: var(--fail); border-color: var(--fail); }
+
+.diagram { overflow-x: auto; }
+.diagram svg { display: block; width: 100%; min-width: 860px; height: auto; font-family: var(--sans); color: var(--fg); }
+svg text { fill: var(--fg); font-size: 13px; }
+svg .t-s { font-size: 11.5px; fill: var(--muted); }
+svg .t-m { font-family: var(--mono); font-size: 11.5px; }
+svg .t-h { font-size: 15px; font-weight: 600; }
+svg .t-zone { font-size: 12px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+svg .z-grid { fill: var(--grid-tint); stroke: var(--grid); stroke-width: 1.2; stroke-dasharray: 5 4; }
+svg .z-direct { fill: var(--direct-tint); stroke: var(--direct); stroke-width: 1.2; stroke-dasharray: 5 4; }
+svg .z-mon { fill: var(--mon-tint); stroke: var(--mon); stroke-width: 1.2; stroke-dasharray: 5 4; }
+svg .box { fill: var(--sheet); stroke: var(--fg); stroke-width: 1.3; }
+svg .box-g { fill: var(--sheet); stroke: var(--grid); stroke-width: 1.6; }
+svg .box-d { fill: var(--sheet); stroke: var(--direct); stroke-width: 1.6; }
+svg .box-m { fill: var(--sheet); stroke: var(--mon); stroke-width: 1.6; }
+svg .inner { fill: var(--inner); stroke: var(--line); stroke-width: 1; }
+svg .hdr-g { fill: var(--grid); } svg .hdr-g + text, svg .on-dark { fill: #ffffff; }
+svg .c-grid { fill: var(--grid); } svg .c-direct { fill: var(--direct); } svg .c-mon { fill: var(--mon); } svg .c-fail { fill: var(--fail); }
+svg .a-grid { stroke: var(--grid); stroke-width: 2.2; fill: none; }
+svg .a-direct { stroke: var(--direct); stroke-width: 2.2; fill: none; }
+svg .a-mon { stroke: var(--mon); stroke-width: 1.8; fill: none; }
+svg .a-fail { stroke: var(--fail); stroke-width: 1.8; fill: none; stroke-dasharray: 4 3; }
+svg .ghost { fill: var(--sheet); stroke: var(--line); stroke-width: 1.2; }
+svg .badge circle { stroke: none; }
+svg .badge text { fill: #ffffff; font-size: 11px; font-weight: 700; text-anchor: middle; }
+svg .mk-grid { fill: var(--grid); } svg .mk-direct { fill: var(--direct); } svg .mk-mon { fill: var(--mon); } svg .mk-fail { fill: var(--fail); }
+
+.key { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.flow { border-top: 3px solid var(--grid); padding-top: 8px; min-width: 0; }
+.flow.d { border-color: var(--direct); } .flow.m { border-color: var(--mon); }
+.flow h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; display: flex; gap: 7px; align-items: center; }
+.num { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--grid); color: #fff; font-size: 11px; font-weight: 700; flex: none; }
+.d .num { background: var(--direct); } .m .num { background: var(--mon); }
+.flow p { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+.flow code, .foot code { font-family: var(--mono); font-size: 11.5px; color: var(--fg); }
+.foot { display: flex; flex-wrap: wrap; gap: 6px 20px; font-size: 12.5px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 10px; }
+.foot b { color: var(--fg); font-weight: 600; }
+@media (max-width: 900px) { .key { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .key { grid-template-columns: 1fr; } .sheet { padding: 18px 16px; } }
+</style>
+
+<div class="wrap">
+<div class="sheet">
+  <header>
+    <div>
+      <h1>Galaxy Cache: how it fits together</h1>
+      <p class="sub">A Java key-value cache. Apps use one client jar; data lives either on a 3-node grid (data and index on each node) or in direct mode (shared file store plus index pods). Every operation is logged for the dashboard.</p>
+    </div>
+    <div class="tags">
+      <span class="tag">Java 21</span><span class="tag">1,024 partitions</span><span class="tag">binary TCP</span><span class="tag f">fail-stop · no backups</span>
+    </div>
+  </header>
+
+  <figure class="diagram" style="margin:0">
+  <svg viewBox="0 0 1200 660" role="img" aria-label="Client processes route puts and gets to the one grid node that owns each key, send queries to all three nodes, and in direct mode write to a shared file store and an index pod; all operations are logged and shown on the dashboard.">
+    <defs>
+      <marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="mk-grid"/></marker>
+      <marker id="ad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="mk-direct"/></marker>
+      <marker id="am" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="mk-mon"/></marker>
+    </defs>
+
+    <!-- ============ CLIENT ============ -->
+    <rect x="32" y="102" width="230" height="510" rx="6" class="ghost"/>
+    <rect x="26" y="96" width="230" height="510" rx="6" class="ghost"/>
+    <rect x="20" y="90" width="230" height="510" rx="6" class="box"/>
+    <text x="36" y="116" class="t-h">Client process</text>
+    <text x="36" y="133" class="t-s">your app JVM · many per host</text>
+
+    <rect x="34" y="146" width="202" height="40" rx="4" class="inner"/>
+    <text x="46" y="163">Your code</text>
+    <text x="46" y="178" class="t-m">put · get · query · count</text>
+
+    <rect x="34" y="194" width="202" height="40" rx="4" class="inner"/>
+    <text x="46" y="211">GalaxyCache&lt;T&gt;</text>
+    <text x="46" y="226" class="t-s">client-cache-api jar</text>
+
+    <rect x="34" y="242" width="202" height="40" rx="4" class="inner"/>
+    <text x="46" y="259">Codec + @Indexed fields</text>
+    <text x="46" y="274" class="t-s">binary / json / java → bytes</text>
+
+    <rect x="34" y="290" width="202" height="40" rx="4" class="inner"/>
+    <text x="46" y="307">Router</text>
+    <text x="46" y="322" class="t-m">murmur3(key) % 1024 → node</text>
+
+    <rect x="34" y="338" width="202" height="40" rx="4" class="inner"/>
+    <text x="46" y="355">Query fan-out + merge</text>
+    <text x="46" y="370" class="t-s">sorted ids, exact limit/offset</text>
+
+    <rect x="34" y="386" width="202" height="40" rx="4" class="inner"/>
+    <text x="46" y="403">Direct-mode reader</text>
+    <text x="46" y="418" class="t-s">parallel reads from file store</text>
+
+    <rect x="34" y="434" width="202" height="40" rx="4" class="inner"/>
+    <text x="46" y="451">Query logger</text>
+    <text x="46" y="466" class="t-m">[GALAXY-QUERY] {json}</text>
+
+    <rect x="34" y="482" width="202" height="40" rx="4" class="inner"/>
+    <text x="46" y="499">galaxy.yaml</text>
+    <text x="46" y="514" class="t-s">cache-configuration jar</text>
+
+    <text x="36" y="548" class="t-s">Namespace → storage + index</text>
+    <text x="36" y="564" class="t-m">grid       → grid-1</text>
+    <text x="36" y="580" class="t-m">trading, risk → direct</text>
+
+    <!-- ============ GRID ZONE ============ -->
+    <rect x="320" y="24" width="560" height="336" rx="8" class="z-grid"/>
+    <text x="336" y="46" class="t-zone c-grid">Grid tier · namespace grid</text>
+    <text x="864" y="46" class="t-s" text-anchor="end">3 equal nodes · no master · each owns ≈⅓ of partitions</text>
+
+    <!-- bus from client -->
+    <path d="M250 312 H290 V82 H787" class="a-grid"/>
+    <path d="M417 82 V104" class="a-grid" marker-end="url(#ag)"/>
+    <path d="M602 82 V104" class="a-grid" marker-end="url(#ag)"/>
+    <path d="M787 82 V104" class="a-grid" marker-end="url(#ag)"/>
+    <text x="436" y="74" class="t-s">binary TCP · 4 pooled connections per node · token + TLS optional</text>
+    <g class="badge"><circle cx="290" cy="150" r="10" class="c-grid"/><text x="290" y="154">1</text></g>
+    <g class="badge"><circle cx="290" cy="178" r="10" class="c-grid"/><text x="290" y="182">2</text></g>
+    <g class="badge"><circle cx="290" cy="206" r="10" class="c-grid"/><text x="290" y="210">3</text></g>
+
+    <!-- node template x positions: 340, 525, 710 -->
+    <g>
+      <rect x="340" y="106" width="155" height="200" rx="6" class="box-g"/>
+      <path d="M340 112 a6 6 0 0 1 6 -6 h143 a6 6 0 0 1 6 6 v24 h-155 z" class="hdr-g"/>
+      <text x="352" y="126" class="on-dark" style="font-weight:600">node-1</text>
+      <text x="483" y="126" class="t-m on-dark" text-anchor="end">:7101</text>
+      <text x="352" y="154" class="t-s">≈341 of 1,024 partitions</text>
+      <rect x="350" y="164" width="135" height="44" rx="4" class="inner"/>
+      <text x="360" y="182">Partition stores</text>
+      <text x="360" y="198" class="t-s">local disk, append-only</text>
+      <rect x="350" y="216" width="135" height="44" rx="4" class="inner"/>
+      <text x="360" y="234">Index in memory</text>
+      <text x="360" y="250" class="t-s">saved to disk, reloads</text>
+      <text x="352" y="290" class="t-m">admin :7201</text>
+    </g>
+    <g>
+      <rect x="525" y="106" width="155" height="200" rx="6" class="box-g"/>
+      <path d="M525 112 a6 6 0 0 1 6 -6 h143 a6 6 0 0 1 6 6 v24 h-155 z" class="hdr-g"/>
+      <text x="537" y="126" class="on-dark" style="font-weight:600">node-2</text>
+      <text x="668" y="126" class="t-m on-dark" text-anchor="end">:7102</text>
+      <text x="537" y="154" class="t-s">≈341 of 1,024 partitions</text>
+      <rect x="535" y="164" width="135" height="44" rx="4" class="inner"/>
+      <text x="545" y="182">Partition stores</text>
+      <text x="545" y="198" class="t-s">local disk, append-only</text>
+      <rect x="535" y="216" width="135" height="44" rx="4" class="inner"/>
+      <text x="545" y="234">Index in memory</text>
+      <text x="545" y="250" class="t-s">saved to disk, reloads</text>
+      <text x="537" y="290" class="t-m">admin :7202</text>
+    </g>
+    <g>
+      <rect x="710" y="106" width="155" height="200" rx="6" class="box-g"/>
+      <path d="M710 112 a6 6 0 0 1 6 -6 h143 a6 6 0 0 1 6 6 v24 h-155 z" class="hdr-g"/>
+      <text x="722" y="126" class="on-dark" style="font-weight:600">node-3</text>
+      <text x="853" y="126" class="t-m on-dark" text-anchor="end">:7103</text>
+      <text x="722" y="154" class="t-s">≈341 of 1,024 partitions</text>
+      <rect x="720" y="164" width="135" height="44" rx="4" class="inner"/>
+      <text x="730" y="182">Partition stores</text>
+      <text x="730" y="198" class="t-s">local disk, append-only</text>
+      <rect x="720" y="216" width="135" height="44" rx="4" class="inner"/>
+      <text x="730" y="234">Index in memory</text>
+      <text x="730" y="250" class="t-s">saved to disk, reloads</text>
+      <text x="722" y="290" class="t-m">admin :7203</text>
+    </g>
+
+    <!-- heartbeat / fail-stop -->
+    <path d="M417 306 V324 M602 306 V324 M787 306 V324 M417 324 H787" class="a-fail"/>
+    <text x="602" y="344" class="c-fail" text-anchor="middle" style="font-size:12px;font-weight:600">heartbeat every 1 s · any node gone 5 s → every node stops, every client call fails</text>
+
+    <!-- ============ DIRECT ZONE ============ -->
+    <rect x="320" y="388" width="560" height="224" rx="8" class="z-direct"/>
+    <text x="336" y="410" class="t-zone c-direct">Direct mode · trading, reference, risk</text>
+
+    <rect x="340" y="424" width="250" height="76" rx="6" class="box-d"/>
+    <text x="354" y="446" class="t-h">Index pods</text>
+    <text x="354" y="465" class="t-m">idx-a :7070 · idx-b :7071</text>
+    <text x="354" y="484" class="t-s">indexes in memory · HTTP · answer ids</text>
+
+    <rect x="340" y="520" width="250" height="76" rx="6" class="box-d"/>
+    <text x="354" y="542" class="t-h">Shared file store</text>
+    <text x="354" y="561" class="t-m">local-fs-1 · local-fs-2</text>
+    <text x="354" y="580" class="t-s">64 KiB pages · 64 MiB segment files</text>
+
+    <path d="M250 462 H338" class="a-direct" marker-end="url(#ad)"/>
+    <text x="285" y="455" class="t-s" text-anchor="middle">fields/ids</text>
+    <path d="M250 558 H338" class="a-direct" marker-end="url(#ad)"/>
+    <text x="285" y="551" class="t-s" text-anchor="middle">bytes</text>
+    <g class="badge"><circle cx="294" cy="510" r="10" class="c-direct"/><text x="294" y="514">4</text></g>
+
+    <text x="612" y="440" style="font-weight:600">No server in the data path</text>
+    <text x="612" y="462" class="t-s">Write: client appends bytes to the</text>
+    <text x="612" y="478" class="t-s">file store, then sends index fields</text>
+    <text x="612" y="494" class="t-s">to the namespace's index pod.</text>
+    <text x="612" y="518" class="t-s">Query: pod answers ids, client reads</text>
+    <text x="612" y="534" class="t-s">the records from storage in parallel.</text>
+    <text x="612" y="558" class="t-s">Pods are localhost only (no login).</text>
+    <text x="612" y="574" class="t-s">One namespace → one store + one pod.</text>
+
+    <!-- ============ MONITORING ============ -->
+    <rect x="910" y="24" width="270" height="588" rx="8" class="z-mon"/>
+    <text x="926" y="46" class="t-zone c-mon">Monitoring</text>
+
+    <rect x="926" y="106" width="238" height="150" rx="6" class="box-m"/>
+    <text x="940" y="128" class="t-h">Dashboard</text>
+    <text x="1150" y="128" class="t-m" text-anchor="end">:8080</text>
+    <text x="940" y="152" class="t-s">• ops, latency p50 / p99 per operation</text>
+    <text x="940" y="172" class="t-s">• Clients panel: who is reading, writing</text>
+    <text x="940" y="192" class="t-s">• grid: nodes up, READY, documents</text>
+    <text x="940" y="212" class="t-s">• index pod stats</text>
+    <text x="940" y="240" class="t-m">?namespace=grid</text>
+
+    <path d="M865 200 H924" class="a-mon" marker-end="url(#am)"/>
+    <text x="896" y="218" class="t-s" text-anchor="middle">stats</text>
+
+    <rect x="926" y="440" width="238" height="76" rx="6" class="box-m"/>
+    <text x="940" y="462" class="t-h">Query log folder</text>
+    <text x="940" y="481" class="t-m">galaxy-data/logs</text>
+    <text x="940" y="500" class="t-s">one JSON line per operation</text>
+
+    <path d="M1045 440 V258" class="a-mon" marker-end="url(#am)"/>
+    <text x="1055" y="352" class="t-s">reads</text>
+    <g class="badge"><circle cx="1045" cy="380" r="10" class="c-mon"/><text x="1045" y="384">5</text></g>
+
+    <!-- client writes query log -->
+    <path d="M135 600 V636 H1045 V518" class="a-mon" marker-end="url(#am)"/>
+    <text x="600" y="652" class="t-s" text-anchor="middle">every client operation appends a [GALAXY-QUERY] line</text>
+  </svg>
+  </figure>
+
+  <div class="key">
+    <div class="flow"><h3><span class="num">1</span>Write to the grid</h3>
+      <p>Client encodes each object and pulls its <code>@Indexed</code> fields, hashes the key to a partition, and sends one batch per owner node in parallel. The node appends to disk, fsyncs, then updates its index.</p></div>
+    <div class="flow"><h3><span class="num">2</span>Read by key</h3>
+      <p><code>get</code> / <code>getAll</code> go only to the owner node: one round trip, no index call. The node streams stored bytes back; the client decodes them on its read threads.</p></div>
+    <div class="flow"><h3><span class="num">3</span>Query and count</h3>
+      <p>Sent to all 3 nodes at once. Each searches its own index (a third of the data), returns sorted ids or records; the client merges, so limit and offset are exact. Counts are summed.</p></div>
+    <div class="flow d"><h3><span class="num">4</span>Direct mode</h3>
+      <p>Same API, chosen in <code>galaxy.yaml</code>. Client writes bytes to the shared file store and fields to the index pod; queries get ids from the pod, then read storage in parallel.</p></div>
+    <div class="flow m"><h3><span class="num">5</span>Monitoring</h3>
+      <p>Every client operation writes a query-log line. The dashboard reads that folder plus each node's admin port (health, stats, Prometheus <code>/metrics</code>).</p></div>
+  </div>
+
+  <div class="foot">
+    <span><b>Failure rule:</b> fail-stop. Recovery is start all nodes, then restart clients.</span>
+    <span><b>One copy</b> of each partition; data is safe on the node's disk.</span>
+    <span><b>Not built yet:</b> backups and failover (Phase 2), coordinator / thin-client queries, live rebalancing.</span>
+  </div>
+</div>
+</div>
