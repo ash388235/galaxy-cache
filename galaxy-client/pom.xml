@@ -21,6 +21,7 @@
     <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-storage-file</artifactId></dependency>
 
     <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-index-server</artifactId><scope>test</scope></dependency>
+    <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-cache-api</artifactId><type>test-jar</type><scope>test</scope></dependency>
   </dependencies>
 
 </project>

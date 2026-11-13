@@ -27,7 +27,7 @@ import java.util.function.Consumer;
  * {@code type: grid} storage as seen by a client. Every key operation is split by owning node and sent to the
  * owners in parallel; dataset-wide operations go to all nodes. Records cross the wire as stored bytes.
  */
-public final class GridDataStore implements DataStore, IndexingStore {
+public final class GridDataStore implements DataStore, IndexingStore, io.galaxycache.client.spi.ClusterSupport {
 
     private final String name;
     private final GridClient grid;
@@ -53,6 +53,12 @@ public final class GridDataStore implements DataStore, IndexingStore {
 
     public GridTopology topology() {
         return grid.topology();
+    }
+
+    /** Node and cluster operations of this grid for {@code GalaxyClient.cluster()}. */
+    @Override
+    public io.galaxycache.client.spi.ProviderCluster cluster() {
+        return new GridProviderCluster(name, grid);
     }
 
     @Override
