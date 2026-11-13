@@ -6,6 +6,7 @@ A client-driven, distributed key-value cache for Java objects, in the spirit of 
 - **Index pods** keep every index in memory and answer queries with ids. Index backup is pluggable (`IndexPersistence` SPI): `noop`, `memory` (dummy), `postgres` (stub).
 - **Clients** (`galaxy-client`) write to storage, update the index pod, and for queries fetch ids from the pod and then read storage directly in parallel.
 - **Topology** is configuration: each namespace maps to exactly one storage and one index pod; storages and pods can serve many namespaces.
+- **Providers**: the same client API also runs on Apache Ignite 2.18 (`provider: ignite` in the config). Operations an engine lacks throw `NotSupportedException`; see [docs/PROVIDERS.md](docs/PROVIDERS.md) for the support matrix.
 - **Every operation** logs a `[GALAXY-QUERY] {json}` line; the dashboard turns those into query analytics.
 
 Design doc: see the project's "Galaxy Cache: Design and Build Plan".
@@ -20,14 +21,17 @@ Design doc: see the project's "Galaxy Cache: Design and Build Plan".
 | `galaxy-index-api` | Index pod wire messages, `IndexClient`, `IndexPersistence` SPI |
 | `galaxy-config` | cache-configuration jar: YAML topology and the namespace catalog |
 | `galaxy-index-server` | Index pod: in-memory engine, HTTP API, persistence implementations, Dockerfile |
-| `galaxy-client` | client-cache-api jar: `GalaxyClient`, `GalaxyCache<T>` |
+| `galaxy-cache-api` | Provider-neutral API: `GalaxyClient`, `GalaxyCache<T>`, `GalaxyCluster`, `Capability`, provider SPI, shared contract tests |
+| `galaxy-client` | client-cache-api jar: the galaxy provider (file storage + index pods) |
 | `galaxy-grid-api` | Grid protocol (binary frames over TCP), partitioning, handshake/auth/TLS, fail-stop monitor |
 | `galaxy-grid-node` | Grid data node: owns partitions on local disk, index in memory (persisted), fail-stop |
 | `galaxy-grid-client` | Storage `type: grid` for the client (key routing, fan-out queries), `GridRebalance` |
+| `galaxy-ignite` | Apache Ignite provider (thin client); optional, only for `provider: ignite` |
+| `galaxy-ignite-node` | Runnable Ignite server node (`galaxy-ignite-node.jar`) |
 | `galaxy-dashboard` | Web dashboard (port 8080) |
 | `galaxy-examples` | End-to-end local demo |
 
-Third-party dependencies: Jackson (JSON/YAML) and JUnit 5 only.
+Third-party dependencies: Jackson (JSON/YAML) and JUnit 5; Apache Ignite only in `galaxy-ignite` and `galaxy-ignite-node`.
 
 New here? [docs/ONBOARDING.md](docs/ONBOARDING.md) covers deploying and running a grid on Unix hosts; [docs/RUNBOOK.md](docs/RUNBOOK.md) covers day-to-day operations. To try it on Linux on a Windows laptop, including a 3-node grid in Docker, see [docs/WSL-LOCAL-LINUX.md](docs/WSL-LOCAL-LINUX.md).
 
@@ -45,6 +49,10 @@ Needs Java 21 and Maven 3.9.
 ```
 
 On Windows: `powershell -ExecutionPolicy Bypass -File scripts\start-local.ps1` (stop with `scripts\stop-local.ps1`). For a demo on the 3-node grid with two writer processes, a reader that waits for them, and the dashboard, run `scripts\run-grid-demo.ps1`.
+
+On Apache Ignite instead: `./scripts/start-ignite.sh` (Windows: `scripts\start-ignite.ps1`), then
+`java @config/ignite-jvm.options -cp galaxy-examples/target/galaxy-examples.jar io.galaxycache.examples.ProviderDemo --config config/galaxy-ignite.yaml`.
+Details in [docs/PROVIDERS.md](docs/PROVIDERS.md).
 
 Single JVM instead: `./scripts/run-demo.sh --embedded --keep-running` starts both pods and the dashboard inside the demo.
 

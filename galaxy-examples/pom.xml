@@ -13,6 +13,8 @@
     <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-grid-client</artifactId></dependency>
     <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-grid-node</artifactId></dependency>
     <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-client</artifactId></dependency>
+    <!-- second provider: lets the examples run against config/galaxy-ignite.yaml -->
+    <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-ignite</artifactId></dependency>
 
     <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-storage-file</artifactId></dependency>
 

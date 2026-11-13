@@ -72,9 +72,22 @@ public final class IgniteProviderSession implements ProviderSession {
     private Set<UUID> knownServers = Set.of();
     private long lastOk;
 
+    /** Ignite fails deep inside a static initializer without these; say what to do instead. */
+    static void requireJvmFlags() {
+        Module unnamed = IgniteProviderSession.class.getModule();
+        for (String pkg : List.of("java.nio", "java.lang", "java.util", "sun.nio.ch")) {
+            if (!Object.class.getModule().isOpen(pkg, unnamed)) {
+                throw new GalaxyException("provider: ignite needs extra JVM flags on Java 21 (java.base does not open "
+                        + pkg + "). Start this JVM with @config/ignite-jvm.options, e.g. "
+                        + "java @config/ignite-jvm.options -cp app.jar Main (see docs/PROVIDERS.md)");
+            }
+        }
+    }
+
     IgniteProviderSession(GalaxyConfig config, IgniteSettings settings) {
         this.config = config;
         this.settings = settings;
+        requireJvmFlags();
         this.client = Ignition.startClient(clientConfiguration(settings));
         try {
             awaitReady(settings.startupWaitMs());

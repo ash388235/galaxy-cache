@@ -1,0 +1,43 @@
+# Galaxy Cache on Apache Ignite 2.18 (provider: ignite). Same client API as config/galaxy.yaml; the data lives in
+# an Ignite cluster instead of galaxy storages + index pods. Relative paths are resolved against this file's folder.
+#   Start the servers:  scripts/start-ignite.sh   (Windows: scripts\start-ignite.ps1)
+#   Stop them:          scripts/stop-ignite.sh    (Windows: scripts\stop-ignite.ps1)
+#   Clients:            GalaxyClient.open(Path.of("config/galaxy-ignite.yaml")) with galaxy-ignite on the classpath
+# Which operations each provider supports: docs/PROVIDERS.md
+cluster: local-ignite
+provider: ignite
+
+ignite:
+  # Every server node. host = the machine it runs on; the three ports must be free and open between hosts.
+  servers:
+    node-1: { host: localhost, discoveryPort: 47500, communicationPort: 47100, clientPort: 10800 }
+    node-2: { host: localhost, discoveryPort: 47501, communicationPort: 47101, clientPort: 10801 }
+    node-3: { host: localhost, discoveryPort: 47502, communicationPort: 47102, clientPort: 10802 }
+  # expectedNodes: 3          # servers that must be up before the cluster activates (default: all of them)
+  partitions: 1024
+  backups: 0                  # 0 = one copy of each record (like the galaxy grid)
+  failureMode: failstop       # failstop: any server lost -> every server stops, clients fail; restart all together
+                              # failover: needs backups >= 1; survivors keep serving (Ignite rebalances)
+  atomicity: TRANSACTIONAL    # TRANSACTIONAL enables cache.inTransaction(...); ATOMIC is a bit faster
+  persistence: true           # Ignite native persistence: data survives a full restart
+  workDir: ../galaxy-data/ignite
+  dataRegionMb: 1024          # off-heap memory per server
+  heartbeatMs: 1000           # client-side fail-stop check
+  failAfterMs: 5000
+  startupWaitMs: 60000
+  onFailure: exit             # client processes exit with status 75 on cluster failure (or: throw)
+  # tls: true
+  # tlsKeyStore: /etc/galaxy/ignite-node.p12
+  # tlsKeyStorePassword: "${env:GALAXY_TLS_PASSWORD}"
+  # tlsTrustStore: /etc/galaxy/ignite-ca.p12
+  # tlsTrustStorePassword: "${env:GALAXY_TLS_PASSWORD}"
+  # Login (username/password) is not built yet for Ignite: keep the ports on a private network.
+
+# Namespaces are Ignite cache groups; storage/indexNode are not used with provider: ignite.
+namespaces:
+  trading: {}
+  reference: {}
+  risk: {}
+
+logging:
+  queryLogDir: ../galaxy-data/logs
