@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * Starts one Ignite server node of a {@code provider: ignite} cluster.
  * <pre>
- * java $IGNITE_OPENS -jar galaxy-ignite-node.jar --config config/galaxy-ignite.yaml --node node-1
+ * java -jar galaxy-ignite-node.jar --config config/galaxy-ignite.yaml --node node-1
  * </pre>
  * Data goes to {@code ignite.workDir} (default: {@code ./ignite-work}). Under {@code failureMode: failstop} the
  * process exits with status 75 when any server of the formed cluster leaves; restart all servers together.
@@ -55,5 +55,18 @@ public final class IgniteNodeMain {
         n.start();
         System.out.println("[galaxy] ignite node " + node + " started; waiting for " + settings.expectedNodes()
                 + " servers (" + settings + ")");
+        // scripts wait for this line: every server is up with the same configuration and the cluster is active
+        while (true) {
+            try {
+                n.awaitFormed(settings.startupWaitMs());
+                System.out.println("[galaxy] ignite node " + node + " READY");
+                return;
+            } catch (RuntimeException e) {
+                if (n.failed()) {
+                    return; // the fail-stop handler exits the process
+                }
+                System.out.println("[galaxy] ignite node " + node + " still waiting for the other servers");
+            }
+        }
     }
 }

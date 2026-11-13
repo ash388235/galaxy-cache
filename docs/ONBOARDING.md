@@ -463,6 +463,10 @@ Client setup:
 
 Queries are limited to 8 levels, 256 conditions, 4 NOTs and 10,000 values.
 
+The same code can run on Apache Ignite instead of the galaxy grid by switching the config to `provider: ignite`
+and adding `galaxy-ignite`; see [PROVIDERS.md](PROVIDERS.md) for setup and for which operations each provider
+supports.
+
 ## 13. Maintenance tools
 
 **[Linux-tested]** `grid-admin.sh` compact and rebalance. **[Windows-tested]** `DatasetMigration` and changing the node list. Run them with no clients writing, from a machine that has the config and the token

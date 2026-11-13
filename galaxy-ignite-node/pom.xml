@@ -40,6 +40,11 @@
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                   <mainClass>io.galaxycache.ignite.node.IgniteNodeMain</mainClass>
+                  <!-- java -jar honours Add-Opens, so the node jar needs no extra JVM flags on Java 21
+                       (same list as ignite.jvm.opens in the parent pom) -->
+                  <manifestEntries>
+                    <Add-Opens>java.base/jdk.internal.access java.base/jdk.internal.misc java.base/sun.nio.ch java.base/sun.util.calendar java.management/com.sun.jmx.mbeanserver jdk.internal.jvmstat/sun.jvmstat.monitor java.base/sun.reflect.generics.reflectiveObjects jdk.management/com.sun.management.internal java.base/java.io java.base/java.nio java.base/java.net java.base/java.util java.base/java.util.concurrent java.base/java.util.concurrent.locks java.base/java.util.concurrent.atomic java.base/java.lang java.base/java.lang.invoke java.base/java.math java.sql/java.sql java.base/java.lang.reflect java.base/java.time java.base/java.text java.management/sun.management java.desktop/java.awt.font</Add-Opens>
+                  </manifestEntries>
                 </transformer>
               </transformers>
               <filters>
