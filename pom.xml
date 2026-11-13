@@ -23,6 +23,8 @@
     <module>galaxy-cache-api</module>
     <module>galaxy-client</module>
     <module>galaxy-grid-client</module>
+    <module>galaxy-ignite</module>
+    <module>galaxy-ignite-node</module>
     <module>galaxy-dashboard</module>
     <module>galaxy-examples</module>
   </modules>
@@ -32,6 +34,9 @@
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <jackson.version>2.17.2</jackson.version>
     <junit.version>5.10.3</junit.version>
+    <ignite.version>2.18.0</ignite.version>
+    <!-- Ignite 2.x on Java 17+: open the JDK internals it uses (servers, tests and thick nodes) -->
+    <ignite.jvm.opens>--add-opens=java.base/jdk.internal.access=ALL-UNNAMED --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED --add-opens=java.base/sun.nio.ch=ALL-UNNAMED --add-opens=java.base/sun.util.calendar=ALL-UNNAMED --add-opens=java.management/com.sun.jmx.mbeanserver=ALL-UNNAMED --add-opens=jdk.internal.jvmstat/sun.jvmstat.monitor=ALL-UNNAMED --add-opens=java.base/sun.reflect.generics.reflectiveObjects=ALL-UNNAMED --add-opens=jdk.management/com.sun.management.internal=ALL-UNNAMED --add-opens=java.base/java.io=ALL-UNNAMED --add-opens=java.base/java.nio=ALL-UNNAMED --add-opens=java.base/java.net=ALL-UNNAMED --add-opens=java.base/java.util=ALL-UNNAMED --add-opens=java.base/java.util.concurrent=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.locks=ALL-UNNAMED --add-opens=java.base/java.util.concurrent.atomic=ALL-UNNAMED --add-opens=java.base/java.lang=ALL-UNNAMED --add-opens=java.base/java.lang.invoke=ALL-UNNAMED --add-opens=java.base/java.math=ALL-UNNAMED --add-opens=java.sql/java.sql=ALL-UNNAMED --add-opens=java.base/java.lang.reflect=ALL-UNNAMED --add-opens=java.base/java.time=ALL-UNNAMED --add-opens=java.base/java.text=ALL-UNNAMED --add-opens=java.management/sun.management=ALL-UNNAMED --add-opens=java.desktop/java.awt.font=ALL-UNNAMED</ignite.jvm.opens>
   </properties>
 
   <dependencyManagement>
@@ -63,6 +68,10 @@
       <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-grid-api</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-grid-node</artifactId><version>${project.version}</version></dependency>
       <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-grid-client</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-ignite</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-ignite-node</artifactId><version>${project.version}</version></dependency>
+      <dependency><groupId>org.apache.ignite</groupId><artifactId>ignite-core</artifactId><version>${ignite.version}</version></dependency>
+      <dependency><groupId>org.apache.ignite</groupId><artifactId>ignite-calcite</artifactId><version>${ignite.version}</version></dependency>
     </dependencies>
   </dependencyManagement>
 
