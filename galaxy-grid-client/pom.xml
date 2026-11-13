@@ -12,6 +12,8 @@
   <dependencies>
     <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-grid-api</artifactId></dependency>
     <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-config</artifactId></dependency>
+    <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-cache-api</artifactId></dependency>
+    <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-cache-api</artifactId><type>test-jar</type><scope>test</scope></dependency>
     <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-client</artifactId><scope>test</scope></dependency>
     <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-grid-node</artifactId><scope>test</scope></dependency>
   </dependencies>

@@ -31,6 +31,7 @@ public final class GridClient implements AutoCloseable {
     private final Consumer<String> onConnectionLost;
     private final GridSecurity security;
     private volatile String failure;
+    private final java.util.List<Consumer<String>> failureListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     public GridClient(GridTopology topology, int connectionsPerNode, int timeoutMs) {
         this(topology, connectionsPerNode, timeoutMs, null);
@@ -61,9 +62,36 @@ public final class GridClient implements AutoCloseable {
 
     /** Ends this client: all current and future calls fail with {@code reason}. */
     public void fail(String reason) {
-        if (failure == null) {
-            failure = reason;
+        boolean first;
+        synchronized (failureListeners) {
+            first = failure == null;
+            if (first) {
+                failure = reason;
+            }
+        }
+        if (first) {
             closeConnections();
+            failureListeners.forEach(l -> {
+                try {
+                    l.accept(reason);
+                } catch (RuntimeException ignored) {
+                    // a listener must not stop the others
+                }
+            });
+        }
+    }
+
+    /** {@code listener} gets the reason once when this client fails (at once if it already has). */
+    public void onFailure(Consumer<String> listener) {
+        String already;
+        synchronized (failureListeners) {
+            already = failure;
+            if (already == null) {
+                failureListeners.add(listener);
+            }
+        }
+        if (already != null) {
+            listener.accept(already);
         }
     }
 
