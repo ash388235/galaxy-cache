@@ -9,6 +9,6 @@ public final class GalaxyClientAccess {
     }
 
     public static DataStore store(GalaxyClient client, String storage) {
-        return client.store(storage);
+        return client.unwrap(io.galaxycache.client.galaxy.GalaxyProviderSession.class).store(storage);
     }
 }

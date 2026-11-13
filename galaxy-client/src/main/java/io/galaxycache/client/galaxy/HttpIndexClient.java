@@ -1,4 +1,4 @@
-package io.galaxycache.client;
+package io.galaxycache.client.galaxy;
 
 import io.galaxycache.common.DatasetId;
 import io.galaxycache.common.GalaxyException;

@@ -319,7 +319,7 @@ class EndToEndTest {
         try (GalaxyClient client = new GalaxyClient(config)) {
             // talk to the wrong pod on purpose
             GalaxyException e = assertThrows(GalaxyException.class,
-                    () -> client.index("idx-a").query(ds, Query.all()));
+                    () -> client.unwrap(io.galaxycache.client.galaxy.GalaxyProviderSession.class).index("idx-a").query(ds, Query.all()));
             assertTrue(e.getMessage().contains("not served by index node 'idx-a'"), e.getMessage());
         }
     }

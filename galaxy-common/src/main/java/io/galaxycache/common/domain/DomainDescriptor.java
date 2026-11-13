@@ -124,6 +124,13 @@ public final class DomainDescriptor<T> {
         return indexedFields.keySet();
     }
 
+    /** Indexed field names (as used in queries) and their declared Java types, in declaration order. */
+    public Map<String, Class<?>> indexedFieldTypes() {
+        Map<String, Class<?>> out = new LinkedHashMap<>();
+        indexedFields.forEach((name, f) -> out.put(name, f.getType()));
+        return out;
+    }
+
     /** Extracts the indexed field values of an object, normalised with {@link Values#normalize(Object)}. */
     public Map<String, Object> extractIndexFields(T value) {
         Map<String, Object> out = new LinkedHashMap<>();
