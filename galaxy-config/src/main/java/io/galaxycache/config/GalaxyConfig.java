@@ -21,7 +21,12 @@ public record GalaxyConfig(String cluster,
                            Map<String, IndexNodeConfig> indexNodes,
                            Map<String, NamespaceConfig> namespaces,
                            ClientSettings client,
-                           LoggingConfig logging) {
+                           LoggingConfig logging,
+                           String provider,
+                           Map<String, Object> ignite) {
+
+    /** The provider used when {@code provider:} is not set. */
+    public static final String DEFAULT_PROVIDER = "galaxy";
 
     private static final ObjectMapper YAML = new ObjectMapper(new YAMLFactory())
             .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
@@ -33,6 +38,13 @@ public record GalaxyConfig(String cluster,
         namespaces = namespaces == null ? Map.of() : Map.copyOf(namespaces);
         client = client == null ? ClientSettings.defaults() : client;
         logging = logging == null ? new LoggingConfig(null, true) : logging;
+        provider = provider == null || provider.isBlank() ? DEFAULT_PROVIDER : provider.trim().toLowerCase(java.util.Locale.ROOT);
+        ignite = ignite == null ? Map.of() : java.util.Collections.unmodifiableMap(new LinkedHashMap<>(ignite));
+    }
+
+    /** True when the galaxy provider (own storage + index pods / grid) is selected. */
+    public boolean galaxyProvider() {
+        return DEFAULT_PROVIDER.equals(provider);
     }
 
     /** Where data of a storage lives: {@code type} plus provider-specific settings such as {@code path}. */
@@ -83,7 +95,7 @@ public record GalaxyConfig(String cluster,
         }
     }
 
-    /** A namespace maps to exactly one storage and one index node. */
+    /** A namespace maps to exactly one storage and one index node (galaxy provider; other providers ignore both). */
     public record NamespaceConfig(String storage, String indexNode) {
     }
 
@@ -136,10 +148,20 @@ public record GalaxyConfig(String cluster,
                 : new CatalogConfig(base.resolve(catalog.path()).normalize().toString());
         LoggingConfig log = logging.queryLogDir() == null ? logging
                 : new LoggingConfig(base.resolve(logging.queryLogDir()).normalize().toString(), logging.systemLogger());
-        return new GalaxyConfig(cluster, cat, st, indexNodes, namespaces, client, log);
+        Map<String, Object> ig = new LinkedHashMap<>(ignite);
+        if (ig.get("workDir") != null) {
+            ig.put("workDir", base.resolve(ig.get("workDir").toString()).normalize().toString());
+        }
+        return new GalaxyConfig(cluster, cat, st, indexNodes, namespaces, client, log, provider, ig);
     }
 
     public GalaxyConfig validate() {
+        if (!galaxyProvider()) {
+            if (ignite.isEmpty() && "ignite".equals(provider)) {
+                throw new GalaxyException("provider: ignite needs an 'ignite:' section");
+            }
+            return this; // storages / indexNodes / namespace placement belong to the galaxy provider
+        }
         if (storages.isEmpty()) {
             throw new GalaxyException("config needs at least one storage");
         }

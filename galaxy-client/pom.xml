@@ -10,6 +10,8 @@
   </parent>
   <artifactId>galaxy-client</artifactId>
   <dependencies>
+    <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-cache-api</artifactId></dependency>
+
     <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-index-api</artifactId></dependency>
 
     <dependency><groupId>io.galaxycache</groupId><artifactId>galaxy-storage-api</artifactId></dependency>
