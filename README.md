@@ -33,7 +33,7 @@ Design doc: see the project's "Galaxy Cache: Design and Build Plan".
 
 Third-party dependencies: Jackson (JSON/YAML) and JUnit 5; Apache Ignite only in `galaxy-ignite` and `galaxy-ignite-node`.
 
-New here? [docs/ONBOARDING.md](docs/ONBOARDING.md) covers deploying and running a grid on Unix hosts; [docs/RUNBOOK.md](docs/RUNBOOK.md) covers day-to-day operations.
+**New here? Start with [docs/GETTING-STARTED.md](docs/GETTING-STARTED.md)**: install, build and run the sanity test on Windows or Unix. Then [docs/ONBOARDING.md](docs/ONBOARDING.md) covers deploying and running a grid on Unix hosts; [docs/RUNBOOK.md](docs/RUNBOOK.md) covers day-to-day operations.
 
 ## Run it locally
 
@@ -53,6 +53,8 @@ On Windows: `powershell -ExecutionPolicy Bypass -File scripts\start-local.ps1` (
 On Apache Ignite instead: `./scripts/start-ignite.sh` (Windows: `scripts\start-ignite.ps1`), then
 `java @config/ignite-jvm.options -cp galaxy-examples/target/galaxy-examples.jar io.galaxycache.examples.ProviderDemo --config config/galaxy-ignite.yaml`.
 Details in [docs/PROVIDERS.md](docs/PROVIDERS.md).
+
+Check a new setup end to end (direct, grid and Ignite): `scripts/sanity-test.sh` (Windows: `scripts\sanity-test.ps1`).
 
 Single JVM instead: `./scripts/run-demo.sh --embedded --keep-running` starts both pods and the dashboard inside the demo.
 

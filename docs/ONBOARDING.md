@@ -1,5 +1,7 @@
 # Galaxy Grid onboarding: deploy and run on Unix
 
+First time? Set up and test locally with [GETTING-STARTED.md](GETTING-STARTED.md) first (Windows and Unix).
+
 How to build Galaxy Cache, deploy a 3-node grid on Unix hosts, configure it, and operate it. Day-to-day procedures
 are also in [RUNBOOK.md](RUNBOOK.md); the security model and open findings are in [SECURITY-TESTING.md](SECURITY-TESTING.md).
 

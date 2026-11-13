@@ -49,17 +49,22 @@ public final class ProviderDemo {
             }
         }
         try (GalaxyClient client = GalaxyClient.fromConfig(Path.of(configPath))) {
+            // the cluster behind this namespace: its grid storage for galaxy (none for file storage), the Ignite cluster
+            var nc = client.listNamespaces().get(namespace);
+            GalaxyCluster cluster = nc != null && nc.storage() != null ? client.cluster(nc.storage()) : client.cluster();
             section("Provider");
             say("provider = %s", client.provider());
-            EnumSet<Capability> missing = EnumSet.allOf(Capability.class);
-            missing.removeAll(client.capabilities());
-            say("supported     : %s", client.capabilities());
+            EnumSet<Capability> supported = EnumSet.noneOf(Capability.class);
+            supported.addAll(client.capabilities());
+            supported.removeIf(c -> isClusterCapability(c) && !cluster.supports(c)); // keep only this cluster's
+            supported.addAll(cluster.capabilities());
+            EnumSet<Capability> missing = EnumSet.complementOf(supported);
+            say("namespace %s, cluster %s", namespace, cluster.name());
+            say("supported     : %s", supported);
             say("not supported : %s", missing);
 
-            GalaxyCluster cluster = client.cluster();
             if (cluster.supports(Capability.CLUSTER_VIEW)) {
-                say("cluster %s is %s, nodes:", cluster.name(), cluster.state());
-                cluster.nodes().forEach(n -> say("  %s", n));
+                attempt("cluster " + cluster.name(), () -> cluster.state() + ", nodes " + cluster.nodes());
             } else {
                 say("no cluster view (single process or file storage)");
             }
@@ -112,6 +117,13 @@ public final class ProviderDemo {
             client.dropDataset(id);
             say("dropped %s", id);
         }
+    }
+
+    private static boolean isClusterCapability(Capability c) {
+        return switch (c) {
+            case ATOMIC_OPS, EXPIRY, TRANSACTIONS, CHANGE_EVENTS -> false;
+            default -> true;
+        };
     }
 
     private interface Step {
