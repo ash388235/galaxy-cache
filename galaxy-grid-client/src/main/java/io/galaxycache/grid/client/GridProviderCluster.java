@@ -29,7 +29,7 @@ import java.util.function.Consumer;
  */
 final class GridProviderCluster implements ProviderCluster {
 
-    private static final Set<Capability> CAPABILITIES = EnumSet.of(Capability.CLUSTER_VIEW, Capability.PARTITION_MAP,
+    static final Set<Capability> CAPABILITIES = EnumSet.of(Capability.CLUSTER_VIEW, Capability.PARTITION_MAP,
             Capability.NODE_STATS, Capability.REBALANCE, Capability.COMPACT);
     /** Rebalance and compaction rewrite whole nodes; they may take hours. */
     private static final long LONG_OP_MS = 6L * 3600 * 1000;

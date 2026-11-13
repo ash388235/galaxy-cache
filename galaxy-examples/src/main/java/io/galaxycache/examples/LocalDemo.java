@@ -116,7 +116,11 @@ public final class LocalDemo {
             ref.put("REF-1", new Trade("AAPL", "REF", Trade.Side.BUY, 1, LocalDate.now(), "NONE", 0, "", "reference row"));
 
             section("Datasets");
-            for (DatasetId ds : client.listDatasets(null)) {
+            List<DatasetId> datasets = new ArrayList<>();
+            for (String ns : List.of("trading", "risk", "reference")) { // the namespaces this demo uses (not the grid)
+                datasets.addAll(client.listDatasets(ns));
+            }
+            for (DatasetId ds : datasets) {
                 String ns = ds.namespace();
                 var nc = client.listNamespaces().get(ns);
                 var stats = ns.equals("trading") ? trades.stats() : ns.equals("risk") ? risk.stats() : ref.stats();

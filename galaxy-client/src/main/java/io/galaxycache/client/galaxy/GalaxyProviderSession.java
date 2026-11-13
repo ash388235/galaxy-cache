@@ -1,5 +1,6 @@
 package io.galaxycache.client.galaxy;
 
+import java.util.EnumSet;
 import io.galaxycache.client.Capability;
 import io.galaxycache.client.spi.ClusterSupport;
 import io.galaxycache.client.spi.ProviderCache;
@@ -100,8 +101,20 @@ public final class GalaxyProviderSession implements ProviderSession {
             }
             name = grids.get(0);
         }
-        DataStore s = store(name);
-        return s instanceof ClusterSupport cs ? cs.cluster() : ProviderCluster.none(name);
+        String storage = name;
+        GalaxyConfig.StorageConfig sc = config.storage(storage);
+        if (stores.containsKey(storage)) {
+            return clusterOf(storage);
+        }
+        // not connected yet: report capabilities without connecting, connect on the first real call
+        Set<Capability> caps = EnumSet.noneOf(Capability.class);
+        StorageProviders.find(sc.type()).clusterCapabilities().forEach(c -> caps.add(Capability.valueOf(c)));
+        return new LazyCluster(storage, Set.copyOf(caps), () -> clusterOf(storage));
+    }
+
+    private ProviderCluster clusterOf(String storage) {
+        DataStore s = store(storage);
+        return s instanceof ClusterSupport cs ? cs.cluster() : ProviderCluster.none(storage);
     }
 
     // ------------------------------------------------------------------ plumbing (public for tools and tests)

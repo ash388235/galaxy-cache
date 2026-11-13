@@ -22,4 +22,11 @@ public final class GridStorageProvider implements StorageProvider {
         return new GridDataStore(name, GridClients.acquire(name, settings),
                 (int) io.galaxycache.grid.api.GridSettings.num(settings, "maxBatchBytes", 16L * 1024 * 1024));
     }
+
+    @Override
+    public java.util.Set<String> clusterCapabilities() {
+        java.util.Set<String> names = new java.util.TreeSet<>();
+        GridProviderCluster.CAPABILITIES.forEach(c -> names.add(c.name()));
+        return names;
+    }
 }
